@@ -6,7 +6,7 @@ This branch is only for:
 - Gemini 3.1 Live calls
 - The dashboard
 - Calendar and logs
-- Outbound call jobs
+- Inbound call handling
 
 Do not add the old WhatsApp or knowledge-base pieces back unless you really mean to rebuild them.
 
@@ -25,7 +25,6 @@ Do not add the old WhatsApp or knowledge-base pieces back unless you really mean
 
 ## Gemini 3.1 Live defaults
 
-- Model: `gemini-3.1-flash-native-audio-preview`
+- Model: `gemini-3.1-flash-live-preview`
 - Voice: `Puck`
-- TTS model: `gemini-3.1-flash-tts-preview`
 - Voice mode: `gemini_live`

@@ -1,23 +1,33 @@
 # Quick Start
 
-## 1. Put the keys in `.env`
+If you want the full A-to-Z guide, read [README.md](/c:/Users/alpha/OneDrive/Documents/SPXAgent/README.md).
+
+## Minimum Setup
+
+1. Copy `.env.example` to `.env`.
+2. Put in:
 
 ```env
-GOOGLE_API_KEY="your-gemini-key"
-LIVEKIT_URL="wss://your-livekit-url"
-LIVEKIT_API_KEY="your-livekit-api-key"
-LIVEKIT_API_SECRET="your-livekit-api-secret"
-SIP_TRUNK_ID="your-sip-trunk-id"
+GOOGLE_API_KEY=your_gemini_api_key
+LIVEKIT_URL=wss://your-project.livekit.cloud
+LIVEKIT_API_KEY=your_livekit_api_key
+LIVEKIT_API_SECRET=your_livekit_api_secret
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=your_supabase_key
+WHATSAPP_ENABLED=false
 ```
 
-If you want dashboard data from Supabase, also add:
+3. Run the Supabase schema from [sql/supabase/setup.sql](/c:/Users/alpha/OneDrive/Documents/SPXAgent/sql/supabase/setup.sql).
+4. In LiveKit, create:
+   - one inbound SIP trunk
+   - one SIP dispatch rule that dispatches `inbound-voice-agent`
+5. In Vobiz, create a SIP trunk with:
 
-```env
-SUPABASE_URL="https://your-project.supabase.co"
-SUPABASE_KEY="your-supabase-service-key"
+```text
+inbound_destination = your-project.sip.livekit.cloud
 ```
 
-## 2. Install
+6. Install:
 
 ```bash
 python -m venv .venv
@@ -25,18 +35,16 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## 3. Run locally
+7. Start:
 
 ```bash
 python start_stack.py
 ```
 
-Open:
-- `http://127.0.0.1:8000`
+8. Open:
 
-## 4. Run on Coolify
+```text
+http://127.0.0.1:8000
+```
 
-1. Add the same env vars in Coolify.
-2. Use the repo `Dockerfile`.
-3. Set the exposed web port to `8000`.
-4. Deploy.
+Video walkthrough: coming soon. Add your GitHub/YouTube link in [README.md](/c:/Users/alpha/OneDrive/Documents/SPXAgent/README.md) when it is ready.

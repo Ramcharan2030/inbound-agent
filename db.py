@@ -46,7 +46,7 @@ def _extract_missing_column(err_str: str) -> str | None:
     return None
 
 def _missing_appointments_table_message() -> str:
-    return 'Appointments table is missing. Run sql/supabase/setup.sql in Supabase.'
+    return 'Appointments table is missing. Run sql/supabase/migration_v3.sql in Supabase.'
 
 def _parse_iso_datetime(value: str | datetime) -> datetime:
     if isinstance(value, datetime):
@@ -342,12 +342,12 @@ def fetch_stats() -> dict:
         logger.error(f'Failed to fetch stats: {e}')
         return _empty
 WA_MESSAGE_TYPES = {'text', 'image', 'document', 'audio'}
-AUTOMATION_CHANNELS = {'call', 'whatsapp'}
+AUTOMATION_CHANNELS = {'whatsapp', 'call'}
 AUTOMATION_JOB_STATUSES = {'pending', 'retry', 'processing', 'sent', 'failed', 'cancelled', 'pending_review', 'launched'}
 
 def normalize_phone_number(phone_number: str) -> str:
     raw = str(phone_number or '').strip()
-    if ':' in raw:
+    if raw.startswith('whatsapp:'):
         raw = raw.split(':', 1)[1].strip()
     if not raw:
         return ''
@@ -430,12 +430,256 @@ def _schema_tolerant_update(table_name: str, *, payload: dict[str, Any], match_f
     logger.error(f'{label}: no compatible columns left to update.')
     return None
 
+def list_wa_conversations(*, query: str='', unread_only: bool=False, include_archived: bool=False, limit: int=100) -> list[dict[str, Any]]:
+    supabase = get_supabase()
+    if not supabase:
+        return []
+    try:
+        res = supabase.table('wa_conversations').select('*').order('last_message_at', desc=True).limit(max(limit, 300)).execute()
+        rows = res.data or []
+        query_norm = str(query or '').strip().casefold()
+        filtered: list[dict[str, Any]] = []
+        for row in rows:
+            unread_count = int(row.get('unread_count') or 0)
+            if unread_only and unread_count <= 0:
+                continue
+            is_archived = bool(row.get('is_archived', False))
+            if is_archived and (not include_archived):
+                continue
+            if query_norm:
+                haystack = ' '.join((str(value or '') for value in [row.get('phone_number'), row.get('display_name'), row.get('last_message_preview')])).casefold()
+                if query_norm not in haystack:
+                    continue
+            filtered.append(row)
+        filtered.sort(key=lambda row: (0 if bool(row.get('is_pinned', False)) else 1, 0 if int(row.get('unread_count') or 0) > 0 else 1, -_safe_timestamp(row.get('last_message_at') or row.get('updated_at'))))
+        return filtered[:limit]
+    except Exception as exc:
+        logger.error(f'Failed to fetch WhatsApp conversations: {exc}')
+        return []
+
+def get_wa_conversation(phone_number: str) -> dict | None:
+    supabase = get_supabase()
+    phone = normalize_phone_number(phone_number)
+    if not supabase or not phone:
+        return None
+    try:
+        res = supabase.table('wa_conversations').select('*').eq('phone_number', phone).limit(1).execute()
+        rows = res.data or []
+        return rows[0] if rows else None
+    except Exception as exc:
+        logger.error(f'Failed to fetch WhatsApp conversation for {phone}: {exc}')
+        return None
+
+def ensure_wa_conversation(phone_number: str, *, display_name: str='') -> dict | None:
+    supabase = get_supabase()
+    phone = normalize_phone_number(phone_number)
+    if not supabase or not phone:
+        return None
+    existing = get_wa_conversation(phone)
+    if existing:
+        if display_name and (not existing.get('display_name')):
+            updated = _schema_tolerant_update('wa_conversations', payload={'display_name': display_name, 'updated_at': _utcnow_iso()}, match_field='id', match_value=existing['id'], label='Failed to update WhatsApp conversation display name')
+            if updated:
+                return updated
+        return existing
+    payload = {'phone_number': phone, 'display_name': display_name or '', 'last_message_preview': '', 'unread_count': 0, 'provider': 'baileys', 'session_name': 'primary', 'is_pinned': False, 'is_archived': False, 'last_read_at': None, 'created_at': _utcnow_iso(), 'updated_at': _utcnow_iso()}
+    created = _schema_tolerant_insert('wa_conversations', payload, label='Failed to create WhatsApp conversation')
+    return created or None
+
+def touch_wa_conversation(phone_number: str, *, display_name: str='', last_message_preview: str='', last_message_at: str | None=None, unread_increment: int=0, reset_unread: bool=False, mark_read: bool=False) -> dict | None:
+    supabase = get_supabase()
+    phone = normalize_phone_number(phone_number)
+    if not supabase or not phone:
+        return None
+    conversation = ensure_wa_conversation(phone, display_name=display_name)
+    if not conversation:
+        return None
+    current_unread = int(conversation.get('unread_count') or 0)
+    payload = {'updated_at': _utcnow_iso(), 'last_message_at': last_message_at or _utcnow_iso(), 'last_message_preview': _safe_preview(last_message_preview), 'display_name': display_name or conversation.get('display_name') or '', 'unread_count': 0 if reset_unread else max(0, current_unread + unread_increment)}
+    if reset_unread or mark_read:
+        payload['last_read_at'] = _utcnow_iso()
+    updated = _schema_tolerant_update('wa_conversations', payload=payload, match_field='id', match_value=conversation['id'], label='Failed to touch WhatsApp conversation')
+    return updated or conversation
+
+def list_wa_messages(phone_number: str, limit: int=100) -> list[dict[str, Any]]:
+    supabase = get_supabase()
+    phone = normalize_phone_number(phone_number)
+    if not supabase or not phone:
+        return []
+    try:
+        res = supabase.table('wa_messages').select('*').eq('phone_number', phone).order('created_at').limit(limit).execute()
+        return res.data or []
+    except Exception as exc:
+        logger.error(f'Failed to fetch WhatsApp messages for {phone}: {exc}')
+        return []
+
+def save_wa_message(payload: dict[str, Any]) -> dict | None:
+    supabase = get_supabase()
+    if not supabase:
+        return None
+    phone = normalize_phone_number(payload.get('phone_number', ''))
+    if not phone:
+        return None
+    direction = str(payload.get('direction') or 'outbound').strip().lower()
+    status = str(payload.get('status') or 'queued').strip().lower()
+    message_type = str(payload.get('message_type') or 'text').strip().lower()
+    if message_type not in WA_MESSAGE_TYPES:
+        message_type = 'text'
+    conversation = ensure_wa_conversation(phone, display_name=str(payload.get('display_name') or ''))
+    conversation_id = conversation.get('id') if conversation else None
+    created_at = str(payload.get('created_at') or _utcnow_iso())
+    row = {'conversation_id': conversation_id, 'phone_number': phone, 'direction': direction, 'status': status, 'message_type': message_type, 'template_name': str(payload.get('template_name') or '').strip() or None, 'body_text': str(payload.get('body_text') or '').strip(), 'caption': str(payload.get('caption') or '').strip(), 'media_url': str(payload.get('media_url') or '').strip() or None, 'mime_type': str(payload.get('mime_type') or '').strip() or None, 'file_name': str(payload.get('file_name') or '').strip() or None, 'asset_id': payload.get('asset_id'), 'provider': str(payload.get('provider') or 'baileys').strip() or 'baileys', 'provider_message_id': str(payload.get('provider_message_id') or '').strip() or None, 'error_text': str(payload.get('error_text') or '').strip() or None, 'related_appointment_id': payload.get('related_appointment_id'), 'related_job_id': payload.get('related_job_id'), 'metadata': payload.get('metadata') or {}, 'created_at': created_at, 'sent_at': payload.get('sent_at'), 'delivered_at': payload.get('delivered_at'), 'read_at': payload.get('read_at')}
+    try:
+        res = supabase.table('wa_messages').insert(row).execute()
+        saved = (res.data or [row])[0]
+        preview = row['body_text'] or row['caption'] or f'[{message_type}]'
+        touch_wa_conversation(phone, display_name=str(payload.get('display_name') or ''), last_message_preview=preview, last_message_at=created_at, unread_increment=1 if direction == 'inbound' else 0, mark_read=direction == 'outbound')
+        return saved
+    except Exception as exc:
+        logger.error(f'Failed to save WhatsApp message: {exc}')
+        return None
+
+def update_wa_message_status(provider_message_id: str, *, status: str, error_text: str='', delivered_at: str | None=None, read_at: str | None=None) -> dict | None:
+    supabase = get_supabase()
+    provider_message_id = str(provider_message_id or '').strip()
+    if not supabase or not provider_message_id:
+        return None
+    payload = {'status': status, 'error_text': error_text or None}
+    if delivered_at:
+        payload['delivered_at'] = delivered_at
+    if read_at:
+        payload['read_at'] = read_at
+    try:
+        res = supabase.table('wa_messages').update(payload).eq('provider_message_id', provider_message_id).execute()
+        rows = res.data or []
+        return rows[0] if rows else None
+    except Exception as exc:
+        logger.error(f'Failed to update WhatsApp message status: {exc}')
+        return None
+
+def apply_wa_conversation_action(phone_number: str, action: str) -> dict | None:
+    phone = normalize_phone_number(phone_number)
+    conversation = get_wa_conversation(phone)
+    if not conversation:
+        conversation = ensure_wa_conversation(phone)
+    if not conversation:
+        return None
+    action_name = str(action or '').strip().lower()
+    unread_count = int(conversation.get('unread_count') or 0)
+    payload: dict[str, Any] = {'updated_at': _utcnow_iso()}
+    if action_name == 'mark_read':
+        payload['unread_count'] = 0
+        payload['last_read_at'] = _utcnow_iso()
+    elif action_name == 'mark_unread':
+        payload['unread_count'] = max(1, unread_count)
+        payload['last_read_at'] = None
+    elif action_name == 'pin':
+        payload['is_pinned'] = True
+    elif action_name == 'unpin':
+        payload['is_pinned'] = False
+    elif action_name == 'archive':
+        payload['is_archived'] = True
+    elif action_name == 'unarchive':
+        payload['is_archived'] = False
+    else:
+        raise ValueError(f'Unsupported WhatsApp conversation action: {action}')
+    updated = _schema_tolerant_update('wa_conversations', payload=payload, match_field='id', match_value=conversation['id'], label=f"Failed to apply WhatsApp conversation action '{action_name}'")
+    return updated or get_wa_conversation(phone)
+
+def mark_wa_conversation_read(phone_number: str) -> bool:
+    updated = apply_wa_conversation_action(phone_number, 'mark_read')
+    return bool(updated)
+
+def list_wa_templates(active_only: bool=False) -> list[dict[str, Any]]:
+    supabase = get_supabase()
+    if not supabase:
+        return []
+    try:
+        query = supabase.table('wa_templates').select('*').order('name')
+        if active_only:
+            query = query.eq('is_active', True)
+        res = query.execute()
+        return res.data or []
+    except Exception as exc:
+        logger.error(f'Failed to fetch WhatsApp templates: {exc}')
+        return []
+
+def get_wa_template(name_or_id: str | int) -> dict | None:
+    supabase = get_supabase()
+    if not supabase:
+        return None
+    try:
+        query = supabase.table('wa_templates').select('*')
+        if str(name_or_id).isdigit():
+            query = query.eq('id', str(name_or_id))
+        else:
+            query = query.eq('name', str(name_or_id))
+        res = query.limit(1).execute()
+        rows = res.data or []
+        return rows[0] if rows else None
+    except Exception as exc:
+        logger.error(f'Failed to fetch WhatsApp template {name_or_id}: {exc}')
+        return None
+
+def upsert_wa_template(payload: dict[str, Any]) -> dict | None:
+    supabase = get_supabase()
+    if not supabase:
+        return None
+    name = str(payload.get('name') or '').strip()
+    if not name:
+        raise ValueError('Template name is required.')
+    row = {'name': name, 'category': str(payload.get('category') or 'general').strip() or 'general', 'message_type': str(payload.get('message_type') or 'text').strip().lower() or 'text', 'body_text': str(payload.get('body_text') or '').strip(), 'variables': payload.get('variables') or [], 'asset_id': payload.get('asset_id'), 'media_url': str(payload.get('media_url') or '').strip() or None, 'mime_type': str(payload.get('mime_type') or '').strip() or None, 'file_name': str(payload.get('file_name') or '').strip() or None, 'caption': str(payload.get('caption') or '').strip(), 'is_active': bool(payload.get('is_active', True)), 'updated_at': _utcnow_iso()}
+    if payload.get('id'):
+        row['id'] = payload.get('id')
+    try:
+        res = supabase.table('wa_templates').upsert(row, on_conflict='name').execute()
+        rows = res.data or []
+        return rows[0] if rows else row
+    except Exception as exc:
+        logger.error(f'Failed to upsert WhatsApp template: {exc}')
+        return None
+
+def delete_wa_template(template_id: str | int) -> bool:
+    supabase = get_supabase()
+    if not supabase:
+        return False
+    try:
+        supabase.table('wa_templates').delete().eq('id', str(template_id)).execute()
+        return True
+    except Exception as exc:
+        logger.error(f'Failed to delete WhatsApp template {template_id}: {exc}')
+        return False
+
+def list_message_assets(limit: int=100) -> list[dict[str, Any]]:
+    supabase = get_supabase()
+    if not supabase:
+        return []
+    try:
+        res = supabase.table('message_assets').select('*').order('created_at', desc=True).limit(limit).execute()
+        return res.data or []
+    except Exception as exc:
+        logger.error(f'Failed to fetch message assets: {exc}')
+        return []
+
+def create_message_asset(payload: dict[str, Any]) -> dict | None:
+    supabase = get_supabase()
+    if not supabase:
+        return None
+    row = {'name': str(payload.get('name') or '').strip(), 'bucket': str(payload.get('bucket') or 'message-assets').strip() or 'message-assets', 'path': str(payload.get('path') or '').strip(), 'public_url': str(payload.get('public_url') or '').strip(), 'mime_type': str(payload.get('mime_type') or '').strip(), 'size_bytes': payload.get('size_bytes'), 'metadata': payload.get('metadata') or {}, 'created_at': _utcnow_iso()}
+    try:
+        res = supabase.table('message_assets').insert(row).execute()
+        rows = res.data or []
+        return rows[0] if rows else row
+    except Exception as exc:
+        logger.error(f'Failed to create message asset: {exc}')
+        return None
+
 def create_automation_job(payload: dict[str, Any]) -> dict | None:
     supabase = get_supabase()
     if not supabase:
         return None
-    channel = str(payload.get('channel') or 'call').strip().lower()
     phone = normalize_phone_number(payload.get('phone_number', ''))
+    channel = str(payload.get('channel') or 'whatsapp').strip().lower()
     if channel not in AUTOMATION_CHANNELS:
         raise ValueError('Unsupported automation channel')
     status = str(payload.get('status') or ('pending_review' if channel == 'call' else 'pending')).strip().lower()
@@ -529,7 +773,7 @@ def cancel_automation_jobs(*, related_appointment_id: str | int | None=None, cha
         logger.error(f'Failed to cancel automation jobs: {exc}')
         return []
 
-def fetch_due_automation_jobs(*, limit: int = 20, channel: str | None = None, now_iso: str | None = None) -> list[dict[str, Any]]:
+def fetch_due_automation_jobs(*, now_iso: str | None=None, limit: int=20, channel: str | None='whatsapp') -> list[dict[str, Any]]:
     supabase = get_supabase()
     if not supabase:
         return []
@@ -549,13 +793,14 @@ def save_call_turn_metric(payload: dict[str, Any]) -> dict | None:
     supabase = get_supabase()
     if not supabase:
         return None
-    row = {'call_room_id': str(payload.get('call_room_id') or '').strip() or None, 'phone_number': normalize_phone_number(payload.get('phone_number', '')) or None, 'turn_index': int(payload.get('turn_index') or 0), 'speaker': str(payload.get('speaker') or 'assistant').strip().lower() or 'assistant', 'stt_endpoint_ms': payload.get('stt_endpoint_ms'), 'llm_first_token_ms': payload.get('llm_first_token_ms'), 'tts_first_audio_ms': payload.get('tts_first_audio_ms'), 'tool_ms': payload.get('tool_ms'), 'total_turn_ms': payload.get('total_turn_ms'), 'metadata': payload.get('metadata') or {}, 'created_at': str(payload.get('created_at') or _utcnow_iso())}
+    row = {'call_room_id': str(payload.get('call_room_id') or '').strip() or None, 'phone_number': normalize_phone_number(payload.get('phone_number', '')) or None, 'turn_index': int(payload.get('turn_index') or 0), 'speaker': str(payload.get('speaker') or 'assistant').strip().lower() or 'assistant', 'stt_endpoint_ms': payload.get('stt_endpoint_ms'), 'kb_ms': payload.get('kb_ms'), 'llm_first_token_ms': payload.get('llm_first_token_ms'), 'tts_first_audio_ms': payload.get('tts_first_audio_ms'), 'tool_ms': payload.get('tool_ms'), 'total_turn_ms': payload.get('total_turn_ms'), 'kb_used': bool(payload.get('kb_used', False)), 'kb_skipped_reason': str(payload.get('kb_skipped_reason') or '').strip() or None, 'metadata': payload.get('metadata') or {}, 'created_at': str(payload.get('created_at') or _utcnow_iso())}
     try:
         res = supabase.table('call_turn_metrics').insert(row).execute()
         rows = res.data or []
         return rows[0] if rows else row
     except Exception as exc:
         if _is_schema_error(str(exc)):
+            logger.warning('call_turn_metrics table is missing. Run sql/supabase/migration_v6_whatsapp_voice.sql.')
             return None
         logger.error(f'Failed to save call turn metric: {exc}')
         return None

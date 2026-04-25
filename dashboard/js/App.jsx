@@ -6,7 +6,6 @@ const NAV = [
   { id: 'agent',       icon: 'AG',   label: 'Agent Settings' },
   { id: 'logs',        icon: 'LOG',  label: 'Call Logs' },
   { id: 'automations', icon: 'AUTO', label: 'Automations' },
-  { id: 'outbound',    icon: 'OUT',  label: 'Outbound Calls' },
   { id: 'language',    icon: 'LANG', label: 'Language Preset' },
   { id: 'demo',        icon: 'DEMO', label: 'Demo Link' },
 ];
@@ -124,7 +123,6 @@ function App() {
     agent:       AgentSettingsPage,
     logs:        CallLogsPage,
     automations: AutomationsPage,
-    outbound:    OutboundPage,
     language:    LanguagePage,
     demo:        DemoPage,
   };

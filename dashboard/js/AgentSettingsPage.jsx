@@ -1,7 +1,6 @@
 // ─── Agent Settings Page ─────────────────────────────────────────────────────
 
-const GEMINI_DEFAULT_MODEL = 'gemini-3.1-flash-native-audio-preview';
-const GEMINI_TTS_DEFAULT_MODEL = 'gemini-3.1-flash-tts-preview';
+const GEMINI_DEFAULT_MODEL = 'gemini-3.1-flash-live-preview';
 const GEMINI_LANGUAGE_OPTIONS = [
   { value: '', label: 'Auto-detect' },
   { value: 'en-IN', label: 'English (India)' },
@@ -21,8 +20,7 @@ const CFG_DEFAULTS = {
   gemini_live_voice: 'Puck', 
   gemini_live_temperature: 0.8, 
   gemini_live_language: '', 
-  gemini_tts_model: GEMINI_TTS_DEFAULT_MODEL,
-  livekit_url: '', sip_trunk_id: '',
+  livekit_url: '',
   livekit_api_key: '', livekit_api_secret: '',
   google_api_key: '',
 };
@@ -48,7 +46,7 @@ function ModelsTab({ cfg, set }) {
           value={cfg.gemini_live_model || ''}
           onChange={set('gemini_live_model')}
           placeholder={GEMINI_DEFAULT_MODEL}
-          hint="Default: Gemini 3.1 Live preview."
+          hint="Default: Gemini 3.1 Live preview with native input and output audio."
           mono
         />
         <C.Input label="Voice" value={cfg.gemini_live_voice || 'Puck'} onChange={set('gemini_live_voice')} />
@@ -58,13 +56,6 @@ function ModelsTab({ cfg, set }) {
           onChange={set('gemini_live_language')}
           options={GEMINI_LANGUAGE_OPTIONS}
           hint="Leave on Auto-detect for multilingual campaigns."
-        />
-        <C.Input
-          label="Scripted TTS Model"
-          value={cfg.gemini_tts_model || GEMINI_TTS_DEFAULT_MODEL}
-          onChange={set('gemini_tts_model')}
-          placeholder={GEMINI_TTS_DEFAULT_MODEL}
-          mono
         />
         <C.Input label="Temperature" type="number" value={cfg.gemini_live_temperature ?? 0.8} onChange={v => set('gemini_live_temperature')(parseFloat(v))} />
       </div>
@@ -93,13 +84,12 @@ function CredentialsTab({ cfg, set }) {
       <C.SectionTitle>LiveKit</C.SectionTitle>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
         <C.Input label="LiveKit URL" value={cfg.livekit_url || ''} onChange={set('livekit_url')} mono placeholder="wss://…" />
-        <C.Input label="SIP Trunk ID" value={cfg.sip_trunk_id || ''} onChange={set('sip_trunk_id')} mono />
         <SecretInput label="API Key" k="livekit_api_key" />
         <SecretInput label="API Secret" k="livekit_api_secret" />
       </div>
-      <C.SectionTitle>AI Provider Secrets</C.SectionTitle>
+      <C.SectionTitle>Gemini Live</C.SectionTitle>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-        <SecretInput label="Google API Key" k="google_api_key" />
+        <SecretInput label="Google API Key" k="google_api_key" hint="Used for Gemini Live audio input and output in this inbound-only build." />
       </div>
     </div>
   );

@@ -1,7 +1,7 @@
 // ─── Automations Page ────────────────────────────────────────────────────────
 
-const AUTO_JOB_STATUS = { sent: 'green', pending: 'amber', failed: 'red', processing: 'blue', launched: 'purple', completed: 'green' };
-const AUTO_CHANNEL_C  = { whatsapp: 'green', call: 'blue' };
+const AUTO_JOB_STATUS = { sent: 'green', pending: 'amber', failed: 'red', processing: 'blue', completed: 'green', cancelled: 'gray' };
+const AUTO_CHANNEL_C  = { whatsapp: 'green' };
 
 function AutomationsPage() {
   const [autoTab, setAutoTab] = React.useState('Jobs');
@@ -38,11 +38,6 @@ function AutomationsPage() {
     failed:  jobs.filter(j => j.status === 'failed').length,
   };
 
-  const handleRun = async id => {
-    await fetch(`/api/automation/jobs/${id}/launch-call`, { method: 'POST' }).catch(() => {});
-    reload();
-  };
-
   const handleRetry = async id => {
     await fetch(`/api/automation/jobs/${id}`, {
       method: 'PATCH',
@@ -63,7 +58,7 @@ function AutomationsPage() {
 
   return (
     <div>
-      <C.PageHeader title="Automations" sub="Automated call and WhatsApp follow-up workflows" />
+      <C.PageHeader title="Automations" sub="Inbound follow-up and WhatsApp reminder workflows" />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 16, marginBottom: 24 }}>
         <C.Stat label="Total Jobs" value={stats.total} />
         <C.Stat label="Sent" value={stats.sent} accent="#34d399" />
@@ -77,7 +72,7 @@ function AutomationsPage() {
           <C.Card title="Automation Jobs" action={
             <div style={{ display: 'flex', gap: 8 }}>
               <C.Tabs tabs={['all','pending','sent','failed']} active={statusFilter} onChange={setStatusFilter} />
-              <C.Tabs tabs={['all','call','whatsapp']} active={channelFilter} onChange={setChannelFilter} />
+              <C.Tabs tabs={['all','whatsapp']} active={channelFilter} onChange={setChannelFilter} />
             </div>
           }>
             <C.Table cols={['Contact','Channel','Trigger','Template','Scheduled','Status','Actions']}
@@ -93,7 +88,6 @@ function AutomationsPage() {
                 <span style={{ fontSize: 12, color: '#7b849a' }}>{j.scheduled_for ? new Date(j.scheduled_for).toLocaleString('en-IN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true }) : '—'}</span>,
                 <C.Badge color={AUTO_JOB_STATUS[j.status] || 'gray'}>{j.status}</C.Badge>,
                 <div style={{ display: 'flex', gap: 6 }}>
-                  {j.status === 'pending' && <C.Btn variant="success" size="sm" onClick={() => handleRun(j.id)}>Run</C.Btn>}
                   {j.status === 'failed'  && <C.Btn variant="ghost"   size="sm" onClick={() => handleRetry(j.id)}>Retry</C.Btn>}
                   <C.Btn variant="danger" size="sm" onClick={() => handleDelete(j.id)}>Del</C.Btn>
                 </div>,

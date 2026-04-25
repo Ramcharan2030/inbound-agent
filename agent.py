@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+from google.genai import types as google_types
 
 
 def _bootstrap_venv() -> None:
@@ -27,7 +28,6 @@ load_dotenv()
 
 from livekit.agents import JobContext, WorkerOptions, cli
 from livekit.agents.voice import Agent, AgentSession
-from livekit.plugins import silero
 
 try:
     from livekit.plugins import google as google_plugin
@@ -42,10 +42,10 @@ CONFIG_FILE = Path(__file__).resolve().parent / "config.json"
 DEFAULT_CONFIG = {
     "first_line": "Namaste! This is Aryan from SPX AI. We help businesses automate with AI. Hmm, may I ask what kind of business you run?",
     "agent_instructions": "",
-    "gemini_live_model": "gemini-3.1-flash-native-audio-preview",
+    "gemini_live_model": "gemini-3.1-flash-live-preview",
     "gemini_live_voice": "Puck",
     "gemini_live_language": "",
-    "gemini_tts_model": "gemini-3.1-flash-tts-preview",
+    "gemini_live_temperature": 0.8,
 }
 
 
@@ -61,69 +61,83 @@ def read_config() -> dict:
     return merged
 
 
-def get_setting(config: dict, key: str, env_key: str, default: str = "") -> str:
-    value = config.get(key)
-    if value not in (None, ""):
-        return str(value)
-    return os.getenv(env_key, default)
+def build_turn_handling() -> dict:
+    return {
+        "turn_detection": "realtime_llm",
+        "endpointing": {"mode": "fixed", "min_delay": 0.2, "max_delay": 0.8},
+        # Realtime Gemini uses server-side turn detection, and LiveKit requires
+        # speech to remain interruptible in that mode.
+        "interruption": {"enabled": True},
+    }
 
 
-class MinimalVoiceAgent(Agent):
+def build_realtime_model(config: dict):
+    if google_plugin is None:
+        raise RuntimeError("livekit-plugins-google is required to start the voice agent.")
+    api_key = str(os.environ.get("GOOGLE_API_KEY") or config.get("google_api_key") or "").strip()
+    if not api_key:
+        raise RuntimeError("Set GOOGLE_API_KEY so Gemini Live can connect.")
+    instructions = str(config.get("agent_instructions") or "").strip()
+    first_line = str(config.get("first_line") or DEFAULT_CONFIG["first_line"]).strip()
+    if first_line:
+        greeting_hint = (
+            "If the caller greets you or asks who is speaking, respond with this opening line "
+            f"or a very close natural variation: {first_line}"
+        )
+        instructions = f"{instructions}\n\n{greeting_hint}".strip() if instructions else greeting_hint
+    language = str(config.get("gemini_live_language") or "").strip() or None
+    model = str(config.get("gemini_live_model") or DEFAULT_CONFIG["gemini_live_model"]).strip()
+    voice = str(config.get("gemini_live_voice") or DEFAULT_CONFIG["gemini_live_voice"]).strip()
+    temperature = config.get("gemini_live_temperature", DEFAULT_CONFIG["gemini_live_temperature"])
+    try:
+        temperature = float(temperature)
+    except (TypeError, ValueError):
+        temperature = float(DEFAULT_CONFIG["gemini_live_temperature"])
+    return google_plugin.realtime.RealtimeModel(
+        api_key=api_key,
+        model=model,
+        voice=voice,
+        language=language,
+        temperature=temperature,
+        instructions=instructions,
+        modalities=[google_types.Modality.AUDIO],
+        input_audio_transcription=google_types.AudioTranscriptionConfig(),
+        output_audio_transcription=google_types.AudioTranscriptionConfig(),
+        thinking_config=google_types.ThinkingConfig(include_thoughts=False),
+    )
+
+
+class InboundVoiceAgent(Agent):
     def __init__(self, config: dict) -> None:
-        prompt = str(config.get("agent_instructions") or "").strip()
-        instructions = prompt or (
-            "You are a concise, polite Indian voice sales assistant. "
+        instructions = str(config.get("agent_instructions") or "").strip() or (
+            "You are a concise, polite Indian inbound voice assistant. "
             "Keep replies short, ask one question at a time, and stay helpful."
         )
-
+        self._first_line = str(config.get("first_line") or DEFAULT_CONFIG["first_line"]).strip()
         super().__init__(
             instructions=instructions,
-            stt=self._build_stt(config),
-            llm=self._build_llm(config),
-            tts=self._build_tts(config),
+            turn_handling={"interruption": {"enabled": True}},
         )
-        self._first_line = str(config.get("first_line") or DEFAULT_CONFIG["first_line"]).strip()
-
-    def _build_stt(self, config: dict):
-        if google_plugin is None:
-            raise RuntimeError("livekit-plugins-google is required to start the voice agent.")
-        language = str(config.get("gemini_live_language") or "").strip() or None
-        kwargs = {}
-        if language:
-            kwargs["language"] = language
-        return google_plugin.STT(**kwargs)
-
-    def _build_llm(self, config: dict):
-        if google_plugin is None:
-            raise RuntimeError("livekit-plugins-google is required to start the voice agent.")
-        model = str(config.get("gemini_live_model") or DEFAULT_CONFIG["gemini_live_model"]).strip()
-        return google_plugin.LLM(model=model)
-
-    def _build_tts(self, config: dict):
-        if google_plugin is None:
-            raise RuntimeError("livekit-plugins-google is required to start the voice agent.")
-        voice = str(config.get("gemini_live_voice") or DEFAULT_CONFIG["gemini_live_voice"]).strip()
-        language = str(config.get("gemini_live_language") or "").strip() or None
-        kwargs = {"voice_name": voice}
-        if language:
-            kwargs["language"] = language
-        return google_plugin.TTS(**kwargs)
 
     async def on_enter(self):
-        if self._first_line:
-            await self.session.generate_reply(instructions=f'Say exactly this opening line: "{self._first_line}"')
+        if not self._first_line:
+            return
+        await self.session.say(
+            self._first_line,
+            allow_interruptions=True,
+            add_to_chat_ctx=True,
+        )
 
 
 async def entrypoint(ctx: JobContext):
     config = read_config()
     logger.info("Worker joined room: %s", ctx.room.name)
     session = AgentSession(
-        vad=silero.VAD.load(),
-        turn_detection="stt",
-        min_endpointing_delay=0.15,
+        llm=build_realtime_model(config),
+        turn_handling=build_turn_handling(),
     )
     await session.start(
-        agent=MinimalVoiceAgent(config),
+        agent=InboundVoiceAgent(config),
         room=ctx.room,
     )
 
@@ -134,7 +148,7 @@ if __name__ == "__main__":
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
-            agent_name="outbound-caller",
+            agent_name="inbound-voice-agent",
             host=worker_host,
             port=worker_port,
         )

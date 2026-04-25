@@ -1,6 +1,5 @@
 import argparse
 import os
-import shutil
 import signal
 import socket
 import subprocess
@@ -8,7 +7,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_UI_HOST = "0.0.0.0"
@@ -35,12 +33,12 @@ _bootstrap_venv()
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Start the trimmed SPXAgent local stack.")
+    parser = argparse.ArgumentParser(description="Start the inbound SPX Voice Agent stack.")
     parser.add_argument("--no-ui", action="store_true", help="Skip the FastAPI dashboard.")
-    parser.add_argument("--no-agent", action="store_true", help="Skip the LiveKit voice agent worker.")
+    parser.add_argument("--no-agent", action="store_true", help="Skip the LiveKit inbound voice worker.")
     parser.add_argument("--no-worker", action="store_true", help="Skip the automation worker.")
-    parser.add_argument("--ui-port", type=int, default=None, help="Preferred dashboard port. Falls forward to the next free port if busy.")
-    parser.add_argument("--agent-port", type=int, default=None, help="Preferred LiveKit worker health port. Falls forward to the next free port if busy.")
+    parser.add_argument("--ui-port", type=int, default=None, help="Preferred dashboard port.")
+    parser.add_argument("--agent-port", type=int, default=None, help="Preferred LiveKit worker health port.")
     return parser.parse_args()
 
 
@@ -52,6 +50,39 @@ def _parse_port(raw_value: str | None, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(0, min(port, 65535))
+
+
+def _parse_bool(raw_value: object, default: bool=False) -> bool:
+    if raw_value in (None, ""):
+        return default
+    if isinstance(raw_value, bool):
+        return raw_value
+    text = str(raw_value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _read_local_config() -> dict:
+    config_path = ROOT / "config.json"
+    if not config_path.exists():
+        return {}
+    try:
+        import json
+
+        return json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _whatsapp_automation_enabled() -> bool:
+    config = _read_local_config()
+    config_value = config.get("whatsapp_enabled")
+    if config_value not in (None, ""):
+        return _parse_bool(config_value, False)
+    return _parse_bool(os.environ.get("WHATSAPP_ENABLED"), False)
 
 
 def _is_port_available(host: str, port: int) -> bool:
@@ -69,7 +100,6 @@ def _find_available_port(host: str, preferred_port: int) -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind((host, 0))
             return int(sock.getsockname()[1])
-
     port = preferred_port
     for _ in range(200):
         if _is_port_available(host, port):
@@ -80,27 +110,12 @@ def _find_available_port(host: str, preferred_port: int) -> int:
     raise RuntimeError(f"Could not find a free port starting from {preferred_port} on host {host}.")
 
 
-def build_services(
-    args: argparse.Namespace,
-    *,
-    ui_host: str,
-    ui_port: int,
-    agent_host: str,
-    agent_port: int,
-) -> list[dict]:
+def build_services(args: argparse.Namespace, *, ui_host: str, ui_port: int, agent_host: str, agent_port: int) -> list[dict]:
     python_cmd = str(Path(sys.executable))
     services: list[dict] = []
     if not args.no_ui:
         services.append(
-            {
-                "name": "ui",
-                "cmd": [python_cmd, "ui_server.py"],
-                "cwd": str(ROOT),
-                "env": {
-                    "UI_HOST": ui_host,
-                    "UI_PORT": str(ui_port),
-                },
-            }
+            {"name": "ui", "cmd": [python_cmd, "ui_server.py"], "cwd": str(ROOT), "env": {"UI_HOST": ui_host, "UI_PORT": str(ui_port)}}
         )
     if not args.no_agent:
         services.append(
@@ -108,20 +123,11 @@ def build_services(
                 "name": "agent",
                 "cmd": [python_cmd, "agent.py", "start"],
                 "cwd": str(ROOT),
-                "env": {
-                    "AGENT_HOST": agent_host,
-                    "AGENT_PORT": str(agent_port),
-                },
+                "env": {"AGENT_HOST": agent_host, "AGENT_PORT": str(agent_port)},
             }
         )
-    if not args.no_worker:
-        services.append(
-            {
-                "name": "automation",
-                "cmd": [python_cmd, "automation_worker.py"],
-                "cwd": str(ROOT),
-            }
-        )
+    if not args.no_worker and _whatsapp_automation_enabled():
+        services.append({"name": "automation", "cmd": [python_cmd, "automation_worker.py"], "cwd": str(ROOT)})
     return services
 
 
@@ -178,38 +184,31 @@ def start_services(services: list[dict]) -> list[tuple[str, subprocess.Popen[str
         thread = threading.Thread(target=stream_output, args=(service["name"], process), daemon=True)
         thread.start()
         print(f"[stack] Started {service['name']} (pid {process.pid})", flush=True)
-        time.sleep(0.5)
+        time.sleep(0.4)
     return procs
 
 
 def main() -> int:
     args = parse_args()
-    ui_host = str(os.environ.get("UI_HOST", DEFAULT_UI_HOST)).strip() or DEFAULT_UI_HOST
-    agent_host = str(os.environ.get("AGENT_HOST", DEFAULT_AGENT_HOST)).strip() or DEFAULT_AGENT_HOST
+    ui_host = str(os.environ.get("UI_HOST") or os.environ.get("HOST") or DEFAULT_UI_HOST).strip() or DEFAULT_UI_HOST
+    agent_host = str(os.environ.get("AGENT_HOST") or DEFAULT_AGENT_HOST).strip() or DEFAULT_AGENT_HOST
     ui_port_env = os.environ.get("UI_PORT") or os.environ.get("PORT")
     preferred_ui_port = args.ui_port if args.ui_port is not None else _parse_port(ui_port_env, DEFAULT_UI_PORT)
     preferred_agent_port = args.agent_port if args.agent_port is not None else _parse_port(os.environ.get("AGENT_PORT"), DEFAULT_AGENT_PORT)
     ui_port = _find_available_port(ui_host, preferred_ui_port) if not args.no_ui else preferred_ui_port
     agent_port = _find_available_port(agent_host, preferred_agent_port) if not args.no_agent else preferred_agent_port
-
     if not args.no_ui and ui_port != preferred_ui_port:
         print(f"[stack] UI port {preferred_ui_port} is busy. Using {ui_port} instead.", flush=True)
     if not args.no_agent and agent_port != preferred_agent_port:
         print(f"[stack] Agent port {preferred_agent_port} is busy. Using {agent_port} instead.", flush=True)
-
-    services = build_services(
-        args,
-        ui_host=ui_host,
-        ui_port=ui_port,
-        agent_host=agent_host,
-        agent_port=agent_port,
-    )
+    services = build_services(args, ui_host=ui_host, ui_port=ui_port, agent_host=agent_host, agent_port=agent_port)
+    if not args.no_worker and not any(service["name"] == "automation" for service in services):
+        print("[stack] WhatsApp automation is disabled. Skipping automation worker.", flush=True)
     if not services:
         print("[stack] Nothing to start.", flush=True)
         return 0
-
     procs = start_services(services)
-    print("[stack] Local stack is starting. Press Ctrl+C once to stop everything.", flush=True)
+    print("[stack] Inbound stack is starting. Press Ctrl+C once to stop everything.", flush=True)
     if not args.no_ui:
         print(f"[stack] Dashboard: http://127.0.0.1:{ui_port}", flush=True)
     if not args.no_agent:
