@@ -4,6 +4,14 @@ Paste the full prompt below into any coding agent when you want it to generate a
 
 The goal is not a mockup, starter shell, or partial dashboard. The goal is a complete, production-usable UI that wires together every retained backend capability cleanly.
 
+Important: this file is meant to be used as an implementation prompt. Do not summarize it for the frontend builder. Copy the whole prompt, paste it into a coding agent, and make the agent build the actual frontend project.
+
+If the agent starts explaining instead of writing files, send this:
+
+```text
+Use this prompt to build the actual frontend application now. Do not just explain the instructions. Create the files, install the packages, and make it runnable.
+```
+
 ```md
 You are a senior frontend engineer and product designer. Build a production-ready frontend for the SPXAgent backend-only Gemini branch.
 

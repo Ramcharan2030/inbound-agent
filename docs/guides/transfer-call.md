@@ -2,6 +2,8 @@
 
 This document outlines the steps to configure, run, and use the Cold Transfer (SIP REFER) functionality in the LiveKit Voice Agent.
 
+This guide is only for SIP transfer behavior. It does not create the frontend dashboard. To build the frontend, use `docs/ui-agent-prompt.md` with a coding agent and tell it to create the actual frontend files, install dependencies, and make the app runnable.
+
 ## 1. Prerequisites
 
 Ensure your `.env` file contains the following Vobiz SIP credentials and LiveKit configuration:

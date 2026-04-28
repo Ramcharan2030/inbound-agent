@@ -4,6 +4,8 @@ Use this file together with `/openapi.json`.
 
 The OpenAPI document is the route-level source of truth, but several responses are intentionally loose JSON objects. This document gives frontend builders the practical shapes and behavior they need to create a real UI without reverse-engineering the backend.
 
+This document is not the frontend prompt by itself. To build the frontend, copy the full prompt from `docs/ui-agent-prompt.md` into a coding agent and tell it to implement the actual frontend project. The frontend builder should use this contract as the API source of truth.
+
 ## Global Behavior
 
 - No auth layer is bundled in this branch.

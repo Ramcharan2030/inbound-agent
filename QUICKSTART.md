@@ -66,4 +66,42 @@ python kb_worker.py
 
 ## 6. Build a UI separately
 
-Use [docs/ui-agent-prompt.md](docs/ui-agent-prompt.md) with any coding agent to generate a frontend against this backend.
+This repo does not include a finished frontend. The frontend must be built separately.
+
+Use [docs/ui-agent-prompt.md](docs/ui-agent-prompt.md) with a coding agent to generate the real frontend against this backend.
+
+Do not just read the prompt. Do this:
+
+1. Open [docs/ui-agent-prompt.md](docs/ui-agent-prompt.md).
+2. Copy the whole prompt.
+3. Paste it into a coding agent.
+4. Add this line before the prompt:
+
+```text
+Use this prompt to build the actual frontend application now. Do not just explain the instructions. Create the files, install the packages, and make it runnable.
+```
+
+5. Tell the agent the backend is running at:
+
+```text
+http://127.0.0.1:8000
+```
+
+6. Tell the agent to create a frontend `.env` value like:
+
+```env
+VITE_API_BASE_URL=http://127.0.0.1:8000
+```
+
+or:
+
+```env
+NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
+```
+
+7. In the generated frontend folder, run:
+
+```bash
+npm install
+npm run dev
+```

@@ -9,6 +9,8 @@ Backend-only distribution of the SPX voice stack. This branch ships:
 
 This branch does not ship a bundled dashboard, WhatsApp surfaces, demo links, or follow-up automation.
 
+If you need a frontend, build it separately from the prompt in [docs/ui-agent-prompt.md](docs/ui-agent-prompt.md). That prompt is not just documentation. Paste it into a coding agent and tell the agent to create the actual frontend files, install dependencies, and make the app runnable.
+
 ## Runtime
 
 - Conversation runtime: `gemini-3.1-flash-live-preview`
@@ -54,3 +56,13 @@ Existing legacy deployments should also run:
 - UI generation prompt: [docs/ui-agent-prompt.md](docs/ui-agent-prompt.md)
 
 The expected public handoff is backend plus prompt, not backend plus bundled frontend.
+
+To build the frontend:
+
+1. Start this backend.
+2. Verify `http://127.0.0.1:8000/health` returns `ok`.
+3. Open [docs/ui-agent-prompt.md](docs/ui-agent-prompt.md).
+4. Copy the entire prompt.
+5. Paste it into a coding agent.
+6. Add: `Use this prompt to build the actual frontend application now. Do not just explain the instructions. Create the files, install the packages, and make it runnable.`
+7. Set the frontend API base URL to `http://127.0.0.1:8000` for local development.

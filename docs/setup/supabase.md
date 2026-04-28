@@ -1,5 +1,9 @@
 # Supabase Setup
 
+This document only sets up the database used by the backend. It does not create the frontend dashboard.
+
+After Supabase and the backend are working, build the frontend separately with `docs/ui-agent-prompt.md`. Paste the full prompt into a coding agent and tell it to create the actual frontend files, not just explain the steps.
+
 ## Fresh install
 
 Run these files in order:
