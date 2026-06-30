@@ -12,9 +12,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 
 from backend_config import (
     apply_config_env,
@@ -46,6 +47,7 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
 logger = logging.getLogger("backend-api")
 
 MAX_KB_UPLOAD_BYTES = 25 * 1024 * 1024
+FRONTEND_DIST_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
 
 app = FastAPI(
     title="SPXAgent Backend API",
@@ -795,3 +797,24 @@ def health_check():
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "service": "spx-backend-api",
     }
+
+
+if FRONTEND_DIST_DIR.exists():
+    assets_dir = FRONTEND_DIST_DIR / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+
+
+    @app.get("/", include_in_schema=False)
+    async def frontend_index():
+        return FileResponse(FRONTEND_DIST_DIR / "index.html")
+
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def frontend_spa_fallback(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not Found")
+        requested_file = FRONTEND_DIST_DIR / full_path
+        if requested_file.is_file():
+            return FileResponse(requested_file)
+        return FileResponse(FRONTEND_DIST_DIR / "index.html")

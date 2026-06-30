@@ -12,6 +12,17 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
 
 
+FROM node:22-slim AS frontend_builder
+
+WORKDIR /app/frontend
+
+COPY frontend/package*.json ./
+RUN npm ci
+
+COPY frontend/ ./
+RUN npm run build
+
+
 FROM python:3.11-slim AS runtime
 
 WORKDIR /app
@@ -25,6 +36,7 @@ RUN apt-get update && apt-get install -y \
 
 COPY --from=builder /root/.local /root/.local
 COPY . .
+COPY --from=frontend_builder /app/frontend/dist ./frontend/dist
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 RUN mkdir -p /app/data /app/data/kb
