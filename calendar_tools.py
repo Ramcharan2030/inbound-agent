@@ -38,15 +38,45 @@ def _format_slot_label(dt: datetime) -> str:
     return dt.strftime("%I:%M %p").lstrip("0")
 
 
-def _business_window(day: date) -> tuple[datetime, datetime] | tuple[None, None]:
-    weekday = day.weekday()
-    if weekday == 6:
-        return None, None
+def _time_str_to_datetime(day: date, time_str: str) -> datetime:
+    """Convert 'HH:MM' string + date into a timezone-aware IST datetime."""
+    h, m = map(int, time_str.split(":"))
+    return IST.localize(datetime.combine(day, time(hour=h, minute=m)))
 
-    close_hour = 17 if weekday == 5 else 19
-    start_dt = IST.localize(datetime.combine(day, time(hour=10, minute=0)))
-    end_dt = IST.localize(datetime.combine(day, time(hour=close_hour, minute=0)))
-    return start_dt, end_dt
+
+def _get_sessions_for_day(day: date) -> list[tuple[datetime, datetime]]:
+    """
+    Return list of (session_start_dt, session_end_dt) for the given date.
+    Reads from doctor_schedule DB with fallback to hardcoded defaults.
+    Returns empty list if doctor is off or date is blocked.
+    """
+    try:
+        import db_schedule
+        sessions_raw = db_schedule.get_active_sessions(day)
+        if not sessions_raw:
+            return []
+        return [
+            (_time_str_to_datetime(day, start), _time_str_to_datetime(day, end))
+            for start, end in sessions_raw
+        ]
+    except Exception as exc:
+        logger.warning("[CAL] db_schedule unavailable, using hardcoded fallback: %s", exc)
+        # Hardcoded fallback: Mon-Fri 9-13 + 16-19, Sat 9-13, Sun closed
+        weekday = day.weekday()
+        if weekday == 6:
+            return []
+        sessions = [(_time_str_to_datetime(day, "09:00"), _time_str_to_datetime(day, "13:00"))]
+        if weekday < 5:  # Mon-Fri get afternoon session
+            sessions.append((_time_str_to_datetime(day, "16:00"), _time_str_to_datetime(day, "19:00")))
+        return sessions
+
+
+def _business_window(day: date) -> tuple[datetime, datetime] | tuple[None, None]:
+    """Return the overall open/close window for the day (first session start → last session end)."""
+    sessions = _get_sessions_for_day(day)
+    if not sessions:
+        return None, None
+    return sessions[0][0], sessions[-1][1]
 
 
 def validate_appointment_window(start_dt: datetime, end_dt: datetime) -> None:
@@ -64,12 +94,27 @@ def validate_appointment_window(start_dt: datetime, end_dt: datetime) -> None:
     if (end_dt - start_dt).total_seconds() % (SLOT_MINUTES * 60) != 0:
         raise CalendarValidationError("Appointments must use 30-minute increments.")
 
-    open_dt, close_dt = _business_window(start_dt.date())
-    if not open_dt or not close_dt:
-        raise CalendarValidationError("The calendar is closed on Sundays.")
-    if start_dt < open_dt or end_dt > close_dt:
+    sessions = _get_sessions_for_day(start_dt.date())
+    if not sessions:
+        try:
+            import db_schedule
+            if db_schedule.is_day_blocked(start_dt.date()):
+                raise CalendarValidationError("The doctor is not available on this date.")
+        except ImportError:
+            pass
+        raise CalendarValidationError("The doctor is not available on this day.")
+
+    # Slot must fall within at least one session
+    slot_ok = any(
+        sess_start <= start_dt and end_dt <= sess_end
+        for sess_start, sess_end in sessions
+    )
+    if not slot_ok:
+        session_labels = " or ".join(
+            f"{_format_slot_label(s)} to {_format_slot_label(e)}" for s, e in sessions
+        )
         raise CalendarValidationError(
-            f"Appointments must be within business hours ({_format_slot_label(open_dt)} to {_format_slot_label(close_dt)} IST)."
+            f"Appointments must be within working hours: {session_labels} IST."
         )
 
 
@@ -84,13 +129,18 @@ async def get_available_slots(date_str: str) -> list:
         logger.error(f"[CAL] Invalid availability date: {date_str}")
         return []
 
-    open_dt, close_dt = _business_window(target_date)
-    if not open_dt or not close_dt:
-        logger.info(f"[CAL] Closed day for {date_str}")
+    sessions = await asyncio.to_thread(_get_sessions_for_day, target_date)
+    if not sessions:
+        logger.info(f"[CAL] No sessions available for {date_str} (blocked or day off)")
         return []
 
+    # Fetch all booked appointments across all sessions for this day
+    open_dt = sessions[0][0]
+    close_dt = sessions[-1][1]
+
     try:
-        booked = fetch_appointments(
+        booked = await asyncio.to_thread(
+            fetch_appointments,
             start_iso=open_dt.isoformat(),
             end_iso=close_dt.isoformat(),
             statuses=["scheduled"],
@@ -100,30 +150,30 @@ async def get_available_slots(date_str: str) -> list:
         logger.error(f"[CAL] Failed to fetch appointments for availability: {exc}")
         raise
 
-    busy_ranges = []
-    for appointment in booked:
-        busy_ranges.append(
-            (
-                _parse_iso_datetime(appointment["scheduled_start"]),
-                _parse_iso_datetime(appointment["scheduled_end"]),
-            )
+    busy_ranges = [
+        (
+            _parse_iso_datetime(appointment["scheduled_start"]),
+            _parse_iso_datetime(appointment["scheduled_end"]),
         )
+        for appointment in booked
+    ]
 
     free_slots = []
-    slot = open_dt
-    while slot < close_dt:
-        slot_end = slot + timedelta(minutes=SLOT_MINUTES)
-        overlaps = any(start < slot_end and end > slot for start, end in busy_ranges)
-        if not overlaps:
-            iso_value = slot.isoformat()
-            free_slots.append(
-                {
-                    "time": iso_value,
-                    "start_time": iso_value,
-                    "label": _format_slot_label(slot),
-                }
-            )
-        slot = slot_end
+    for sess_start, sess_end in sessions:
+        slot = sess_start
+        while slot < sess_end:
+            slot_end = slot + timedelta(minutes=SLOT_MINUTES)
+            overlaps = any(start < slot_end and end > slot for start, end in busy_ranges)
+            if not overlaps:
+                iso_value = slot.isoformat()
+                free_slots.append(
+                    {
+                        "time": iso_value,
+                        "start_time": iso_value,
+                        "label": _format_slot_label(slot),
+                    }
+                )
+            slot = slot_end
 
     logger.info(f"[CAL] {len(free_slots)} free slots for {date_str}")
     return free_slots
@@ -158,9 +208,10 @@ async def async_create_booking(
     try:
         start_dt = _parse_iso_datetime(start_time)
         end_dt = start_dt + timedelta(minutes=SLOT_MINUTES)
-        validate_appointment_window(start_dt, end_dt)
+        await asyncio.to_thread(validate_appointment_window, start_dt, end_dt)
 
-        appointment = create_appointment(
+        appointment = await asyncio.to_thread(
+            create_appointment,
             {
                 "title": "Appointment",
                 "contact_name": caller_name or "Unknown Caller",

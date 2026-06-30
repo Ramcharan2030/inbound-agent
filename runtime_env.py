@@ -6,6 +6,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 LEGACY_CONFIG_FILE = PROJECT_ROOT / "config.json"
+SKIP_LEGACY_CONFIG_ENV = "SPX_SKIP_LEGACY_CONFIG"
 
 _PUBLIC_URL_ENV_KEYS = (
     "APP_BASE_URL",
@@ -41,7 +42,10 @@ def get_primary_config_path() -> Path:
 def get_config_read_paths() -> list[Path]:
     paths: list[Path] = []
     seen: set[str] = set()
-    for path in (get_primary_config_path(), LEGACY_CONFIG_FILE):
+    read_legacy = str(os.getenv(SKIP_LEGACY_CONFIG_ENV, "") or "").strip().lower() not in {"1", "true", "yes", "on"}
+    for path in (get_primary_config_path(), LEGACY_CONFIG_FILE if read_legacy else None):
+        if path is None:
+            continue
         key = str(path)
         if key in seen:
             continue

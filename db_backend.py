@@ -19,6 +19,10 @@ _ANALYTICS_COLUMNS = {
     "was_booked",
     "interrupt_count",
     "estimated_cost_usd",
+    "cost_vobiz_inr",
+    "cost_livekit_inr",
+    "cost_gemini_inr",
+    "cost_total_inr",
     "call_date",
     "call_hour",
     "call_day_of_week",
@@ -219,6 +223,10 @@ def save_call_log(
     was_booked: bool = False,
     interrupt_count: int = 0,
     call_room_id: str = "",
+    cost_vobiz_inr: float | None = None,
+    cost_livekit_inr: float | None = None,
+    cost_gemini_inr: float | None = None,
+    cost_total_inr: float | None = None,
 ) -> dict:
     supabase = get_supabase()
     if not supabase:
@@ -248,6 +256,14 @@ def save_call_log(
         full_data["call_day_of_week"] = call_day_of_week
     if call_room_id:
         full_data["call_room_id"] = call_room_id
+    if cost_vobiz_inr is not None:
+        full_data["cost_vobiz_inr"] = cost_vobiz_inr
+    if cost_livekit_inr is not None:
+        full_data["cost_livekit_inr"] = cost_livekit_inr
+    if cost_gemini_inr is not None:
+        full_data["cost_gemini_inr"] = cost_gemini_inr
+    if cost_total_inr is not None:
+        full_data["cost_total_inr"] = cost_total_inr
 
     base_data: dict[str, Any] = {
         key: value for key, value in full_data.items() if key not in _ANALYTICS_COLUMNS

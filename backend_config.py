@@ -67,6 +67,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "kb_embedding_fallback_model": "gemini-embedding-001",
     "kb_index_kind": "flat_ip",
     "kb_rerank_enabled": False,
+    "gemini_live_vad_silence_ms": 600,
+    "gemini_live_vad_prefix_padding_ms": 300,
+    "gemini_live_vad_start_sensitivity": "high",
+    "gemini_live_vad_end_sensitivity": "high",
 }
 
 ALLOWED_CONFIG_KEYS = tuple(DEFAULT_CONFIG.keys())
@@ -114,6 +118,10 @@ ENV_KEY_MAP = {
     "kb_embedding_fallback_model": "KB_EMBEDDING_FALLBACK_MODEL",
     "kb_index_kind": "KB_INDEX_KIND",
     "kb_rerank_enabled": "KB_RERANK_ENABLED",
+    "gemini_live_vad_silence_ms": "GEMINI_LIVE_VAD_SILENCE_MS",
+    "gemini_live_vad_prefix_padding_ms": "GEMINI_LIVE_VAD_PREFIX_PADDING_MS",
+    "gemini_live_vad_start_sensitivity": "GEMINI_LIVE_VAD_START_SENSITIVITY",
+    "gemini_live_vad_end_sensitivity": "GEMINI_LIVE_VAD_END_SENSITIVITY",
 }
 
 
@@ -191,7 +199,7 @@ def _config_layers(phone_number: str | None = None) -> list[dict[str, Any]]:
 def _normalize_config(values: dict[str, Any] | None) -> dict[str, Any]:
     raw = dict(DEFAULT_CONFIG)
     for key in ALLOWED_CONFIG_KEYS:
-        if values and key in values and values[key] not in (None, ""):
+        if values and key in values:
             raw[key] = values[key]
         else:
             env_key = ENV_KEY_MAP.get(key)
@@ -243,6 +251,10 @@ def _normalize_config(values: dict[str, Any] | None) -> dict[str, Any]:
         "kb_embedding_fallback_model": str(raw.get("kb_embedding_fallback_model") or "gemini-embedding-001").strip() or "gemini-embedding-001",
         "kb_index_kind": str(raw.get("kb_index_kind") or "flat_ip").strip().lower() or "flat_ip",
         "kb_rerank_enabled": parse_bool(raw.get("kb_rerank_enabled"), False),
+        "gemini_live_vad_silence_ms": max(100, min(2000, parse_int(raw.get("gemini_live_vad_silence_ms"), 600))),
+        "gemini_live_vad_prefix_padding_ms": max(0, min(1000, parse_int(raw.get("gemini_live_vad_prefix_padding_ms"), 300))),
+        "gemini_live_vad_start_sensitivity": str(raw.get("gemini_live_vad_start_sensitivity") or "high").strip().lower(),
+        "gemini_live_vad_end_sensitivity": str(raw.get("gemini_live_vad_end_sensitivity") or "high").strip().lower(),
     }
     return normalized
 
@@ -270,7 +282,9 @@ def write_config(data: dict[str, Any]) -> dict[str, Any]:
 def apply_config_env(config: dict[str, Any] | None) -> None:
     for key, env_key in ENV_KEY_MAP.items():
         value = (config or {}).get(key)
-        if value not in (None, ""):
+        if value in (None, ""):
+            os.environ.pop(env_key, None)
+        else:
             os.environ[env_key] = str(value)
 
 

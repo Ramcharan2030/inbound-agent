@@ -28,6 +28,9 @@ class _SuppressKnownWarnings(logging.Filter):
         "RoomInputOptions and RoomOutputOptions are deprecated",
         "received server content but no active generation",
         "server cancelled tool calls",
+        "failed to send binary stream message",
+        "engine is closed",
+        "Input is shorter by",
     )
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -40,7 +43,19 @@ logging.getLogger("livekit.plugins.google").addFilter(_SuppressKnownWarnings())
 
 load_dotenv()
 logger = logging.getLogger("backend-agent")
-logging.basicConfig(level=logging.INFO)
+
+# ── Observability: log to console AND persistent file ──────────────────────
+_LOG_DIR = Path(__file__).resolve().parent / "logs"
+_LOG_DIR.mkdir(exist_ok=True)
+_file_handler = logging.FileHandler(_LOG_DIR / "agent.log", encoding="utf-8")
+_file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout), _file_handler],
+)
+logging.root.addHandler(_file_handler)
+# ───────────────────────────────────────────────────────────────────────────
 
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     try:
@@ -386,6 +401,21 @@ def prefetch_gemini_tts(live_config: dict, text: str, *, purpose: str) -> None:
     tasks[purpose] = task
 
 
+def _map_sensitivity(value: str, kind: str):
+    if kind == "start":
+        if value == "low":
+            return google_genai_types.StartSensitivity.START_SENSITIVITY_LOW
+        if value == "high":
+            return google_genai_types.StartSensitivity.START_SENSITIVITY_HIGH
+        return google_genai_types.StartSensitivity.START_SENSITIVITY_UNSPECIFIED
+    else:
+        if value == "low":
+            return google_genai_types.EndSensitivity.END_SENSITIVITY_LOW
+        if value == "high":
+            return google_genai_types.EndSensitivity.END_SENSITIVITY_HIGH
+        return google_genai_types.EndSensitivity.END_SENSITIVITY_UNSPECIFIED
+
+
 def build_gemini_realtime_model(live_config: dict):
     if google_plugin is None or google_genai_types is None:
         raise RuntimeError(
@@ -404,10 +434,10 @@ def build_gemini_realtime_model(live_config: dict):
     realtime_input_config = google_genai_types.RealtimeInputConfig(
         automatic_activity_detection=google_genai_types.AutomaticActivityDetection(
             disabled=False,
-            start_of_speech_sensitivity=google_genai_types.StartSensitivity.START_SENSITIVITY_HIGH,
-            end_of_speech_sensitivity=google_genai_types.EndSensitivity.END_SENSITIVITY_LOW,
-            prefix_padding_ms=200,
-            silence_duration_ms=700,
+            start_of_speech_sensitivity=_map_sensitivity(live_config.get("gemini_live_vad_start_sensitivity"), "start"),
+            end_of_speech_sensitivity=_map_sensitivity(live_config.get("gemini_live_vad_end_sensitivity"), "end"),
+            prefix_padding_ms=max(0, parse_int(live_config.get("gemini_live_vad_prefix_padding_ms"), 300)),
+            silence_duration_ms=max(100, parse_int(live_config.get("gemini_live_vad_silence_ms"), 600)),
         )
     )
 
@@ -488,6 +518,7 @@ class AgentTools(llm.ToolContext):
         live_config: dict | None = None,
         caller_profile: dict | None = None,
         runtime_state: dict | None = None,
+        shutdown_fn=None,
     ) -> None:
         super().__init__(tools=[])
         normalized_phone = db.normalize_phone_number(caller_phone or "")
@@ -499,6 +530,7 @@ class AgentTools(llm.ToolContext):
         self.room_name = None
         self._sip_identity = None
         self.live_config = live_config or {}
+        self._shutdown_fn = shutdown_fn
         self.caller_profile = caller_profile or {
             "phone_number": normalized_phone or caller_phone or "",
             "display_name": caller_name or "",
@@ -546,17 +578,39 @@ class AgentTools(llm.ToolContext):
         elapsed_ms = round((time.monotonic() - started_at) * 1000, 2)
         active_turn["tool_ms"] = round(float(active_turn.get("tool_ms") or 0.0) + elapsed_ms, 2)
 
-    @llm.function_tool(description="Transfer this call to a human agent when the caller asks for a human or the request is outside scope.")
+    @llm.function_tool(description=(
+        "Transfer this call to the doctor or a human agent immediately. "
+        "Use this when: (1) the caller says it is an emergency, urgent, or critical, "
+        "(2) they describe severe symptoms (chest pain, breathing trouble, high fever, accident, etc.), "
+        "(3) they explicitly ask to speak with the doctor or a human, "
+        "(4) the situation is clearly beyond the scope of scheduling. "
+        "Do NOT ask for confirmation before transferring in an emergency — transfer immediately. "
+        "IMPORTANT: After calling this tool, do NOT call end_call. The system will handle the disconnect automatically."
+    ))
     async def transfer_call(self) -> str:
         started_at = time.monotonic()
         destination = os.getenv("DEFAULT_TRANSFER_NUMBER", "").strip()
+        
+        logger.info("[TOOL] transfer_call: Attempting transfer. Destination: %s, Identity: %s, Room: %s", 
+                    destination, self._sip_identity, self.room_name)
+
         if destination and self.sip_domain and "@" not in destination:
             clean = destination.replace("tel:", "").replace("sip:", "")
             destination = f"sip:{clean}@{self.sip_domain}"
         if destination and not destination.startswith("sip:"):
             destination = f"sip:{destination}"
+        
         try:
+            if not destination:
+                logger.error("[TOOL] transfer_call: No destination number configured (DEFAULT_TRANSFER_NUMBER)")
+                return "Unable to transfer: No destination configured."
+            
+            if not self._sip_identity:
+                logger.error("[TOOL] transfer_call: No SIP participant identity found to transfer.")
+                return "Unable to transfer: Identity not found."
+
             if self.ctx_api and self.room_name and destination and self._sip_identity:
+                logger.info("[TOOL] transfer_call: Dispatching SIP transfer request to %s", destination)
                 await self.ctx_api.sip.transfer_sip_participant(
                     api.TransferSIPParticipantRequest(
                         room_name=self.room_name,
@@ -565,40 +619,68 @@ class AgentTools(llm.ToolContext):
                         play_dialtone=False,
                     )
                 )
-                return "Transfer initiated successfully."
-            return "Unable to transfer right now."
+                logger.info("[TOOL] transfer_call: Transfer request sent successfully.")
+                return "Transfer initiated successfully. Please say a brief goodbye to the caller now."
+            
+            logger.warning("[TOOL] transfer_call: Missing context (API: %s, Room: %s)", 
+                           bool(self.ctx_api), self.room_name)
+            return "Unable to transfer right now due to technical limitations."
         except Exception as exc:
-            logger.error("[TOOL] transfer_call failed: %s", exc)
+            logger.error("[TOOL] transfer_call failed with error: %s", exc, exc_info=True)
             return "Unable to transfer right now."
         finally:
             self._record_tool_time(started_at)
 
-    @llm.function_tool(description="End the call silently after a clear goodbye, confirmed next step, refusal, or explicit request to end.")
+    @llm.function_tool(description="End the call after a clear goodbye, confirmed booking, answered question, or explicit request to hang up. Do NOT call this if you have already initiated a transfer.")
     async def end_call(self) -> str:
         started_at = time.monotonic()
         try:
+            # We no longer do an immediate SIP transfer here as it was causing unintended transfers.
+            # Instead, we will proactively remove the participant during the delayed shutdown sequence.
             if self.ctx_api and self.room_name and self._sip_identity:
-                await self.ctx_api.sip.transfer_sip_participant(
-                    api.TransferSIPParticipantRequest(
-                        room_name=self.room_name,
-                        participant_identity=self._sip_identity,
-                        transfer_to="tel:+00000000",
-                        play_dialtone=False,
-                    )
-                )
+                logger.info("[TOOL] end_call: Preparing for SIP hangup")
         except Exception as exc:
-            logger.warning("[TOOL] end_call failed: %s", exc)
+            logger.warning("[TOOL] end_call cleanup failed: %s", exc)
         finally:
             self._record_tool_time(started_at)
+        
+        # Schedule room shutdown after a brief pause to allow goodbye audio to finish
+        if callable(self._shutdown_fn):
+            async def _delayed_shutdown():
+                await asyncio.sleep(1.5)
+                try:
+                    # Proactively remove the SIP participant before shutting down the job
+                    if self.ctx_api and self.room_name and self._sip_identity:
+                        try:
+                            from livekit import api as lk_api
+                            await self.ctx_api.room.remove_participant(
+                                lk_api.RemoveParticipantRequest(
+                                    room=self.room_name,
+                                    identity=self._sip_identity,
+                                )
+                            )
+                            logger.info("[TOOL] end_call: SIP participant removed (hangup)")
+                        except Exception as e:
+                            logger.warning("[TOOL] end_call: failed to remove participant: %s", e)
+                    
+                    self._shutdown_fn()
+                except Exception:
+                    pass
+            asyncio.create_task(_delayed_shutdown())
         return ""
 
-    @llm.function_tool(description="Save the caller's booking intent after they confirm an appointment time. Use ISO 8601 datetimes.")
+    @llm.function_tool(description=(
+        "Confirm and save the appointment in the database immediately. "
+        "Use this as soon as the caller agrees to a specific time. "
+        "Returns the booking confirmation details including a booking ID. "
+        "Important: Always include the branch name, treatment, and any special requests in the notes."
+    ))
     async def save_booking_intent(
         self,
         start_time: Annotated[str, "ISO 8601 datetime such as 2026-03-01T10:00:00+05:30"],
         caller_name: Annotated[str, "Full name of the caller"],
         caller_phone: Annotated[str, "Phone number of the caller, or empty if the trusted session number should be reused."] = "",
-        notes: Annotated[str, "Booking notes, email, or special requests"] = "",
+        notes: Annotated[str, "Booking notes, branch name, treatment, or special requests"] = "",
     ) -> str:
         started_at = time.monotonic()
         try:
@@ -606,15 +688,30 @@ class AgentTools(llm.ToolContext):
             effective_name = self._effective_name(caller_name)
             if not effective_phone:
                 return "I still need the best callback number before I can save the booking."
-            self.booking_intent = {
-                "start_time": start_time,
-                "caller_name": effective_name,
-                "caller_phone": effective_phone,
-                "notes": notes,
-            }
-            self.caller_name = effective_name
-            self._note_phone_confirmation(effective_phone)
-            return f"Booking intent saved for {effective_name} at {start_time}. I will confirm after the call."
+            
+            # Perform the actual booking immediately for real-time updates
+            result = await async_create_booking(
+                start_time=start_time,
+                caller_name=effective_name or "Unknown Caller",
+                caller_phone=effective_phone,
+                notes=notes,
+            )
+
+            if result.get("success"):
+                self.booking_intent = {
+                    "start_time": start_time,
+                    "caller_name": effective_name,
+                    "caller_phone": effective_phone,
+                    "notes": notes,
+                    "booking_id": result.get("booking_id"),
+                    "confirmed": True
+                }
+                self.caller_name = effective_name
+                self._note_phone_confirmation(effective_phone)
+                return f"SUCCESS: Booking confirmed for {effective_name} at {start_time}. Booking ID: {result.get('booking_id')}. Please inform the caller."
+            else:
+                return f"FAILED: Could not create booking: {result.get('message')}. Please try a different slot or check details."
+
         except Exception as exc:
             logger.error("[TOOL] save_booking_intent failed: %s", exc)
             return "I had trouble saving the booking. Please try again."
@@ -698,14 +795,19 @@ class OutboundAssistant(Agent):
         if not base_instructions:
             base_instructions = (
                 "You are Aryan from SPX AI. Qualify the caller, answer with confirmed information, and help "
-                "them book an appointment or transfer to a human when needed."
+                "them book an appointment or transfer to a human when needed. "
+                "Speak with a natural, conversational, and professional cadence. Allow for brief pauses and do not rush the caller."
             )
 
-        trusted_phone = bool(self._caller_profile.get("trusted_phone")) and bool(
-            db.normalize_phone_number(self._caller_profile.get("phone_number") or "")
-        )
-        phone_digits = re.sub(r"\D", "", db.normalize_phone_number(self._caller_profile.get("phone_number") or ""))
-        phone_hint = phone_digits[-4:] if len(phone_digits) >= 4 else ""
+        phone_raw = self._caller_profile.get("phone_number") or ""
+        if phone_raw == "Web-Sandbox-Test":
+            phone_digits = "9999991234"
+            phone_hint = "1234"
+            trusted_phone = True
+        else:
+            phone_digits = re.sub(r"\D", "", db.normalize_phone_number(phone_raw))
+            phone_hint = phone_digits[-4:] if len(phone_digits) >= 4 else ""
+            trusted_phone = bool(self._caller_profile.get("trusted_phone")) and bool(phone_digits)
         caller_name = str(self._caller_profile.get("display_name") or "").strip()
         caller_context = [
             "[CALLER CONTEXT]",
@@ -730,7 +832,23 @@ class OutboundAssistant(Agent):
             + "Do not promise WhatsApp messages, reminders, demo links, or follow-up automation.\n"
             + "Use the knowledge-base tool before guessing.\n"
             + "When facts are not confirmed, say so plainly.\n"
-            + "Default next steps are an appointment, a callback, or a human transfer."
+            + "Default next steps are an appointment, a callback, or a human transfer.\n"
+            + "IMPORTANT: You MUST call save_booking_intent as soon as the caller agrees to a slot. "
+            + "An appointment is NOT booked until you call that tool. "
+            + "Include the branch name and treatment details in the notes field of save_booking_intent.\n\n"
+            + "[EMERGENCY PROTOCOL]\n"
+            + "If the caller mentions any of the following, IMMEDIATELY say 'I am connecting you to the doctor right now' "
+            + "and call transfer_call WITHOUT asking any further questions:\n"
+            + "- Emergency, urgent, critical, life-threatening\n"
+            + "- Severe symptoms: chest pain, difficulty breathing, unconscious, accident, heavy bleeding, stroke, heart attack\n"
+            + "- Phrases like: 'it's serious', 'need the doctor now', 'can't wait', 'very bad condition'\n"
+            + "Do NOT try to book an appointment in an emergency. Transfer the call immediately.\n\n"
+            + "[CALL ENDING DIRECTIVE]\n"
+            + "After you have completed your task (booking confirmed, question answered, or transfer initiated), "
+            + "give a brief warm goodbye and IMMEDIATELY call the end_call tool to disconnect the call. "
+            + "Do NOT keep the call open after the work is done. "
+            + "If the caller explicitly says goodbye or indicates they are done, say a one-sentence farewell and call end_call right away. "
+            + "Do not wait for the caller to hang up — always end the call proactively."
             + get_ist_time_context()
             + get_language_instruction(str(self._live_config.get('lang_preset') or 'multilingual'))
         )
@@ -779,19 +897,33 @@ async def entrypoint(ctx: JobContext) -> None:
         except Exception:
             pass
 
+    for _ in range(10):
+        if ctx.room.remote_participants:
+            break
+        await asyncio.sleep(0.3)
+
+    detected_sip_identity = None
     for identity, participant in ctx.room.remote_participants.items():
+        if not detected_sip_identity:
+            detected_sip_identity = identity
+            logger.info("[ROOM] Initial SIP participant detected: %s", identity)
+        
         if participant.name and participant.name not in ("", "Caller", "Unknown"):
             caller_name = participant.name
         if not phone_number:
             attrs = participant.attributes or {}
             phone_number = attrs.get("sip.phoneNumber") or attrs.get("phoneNumber")
-        if not phone_number and "+" in identity:
-            match = re.search(r"\+\d{7,15}", identity)
+        if not phone_number:
+            match = re.search(r"\+?\d{10,15}", identity)
             if match:
                 phone_number = match.group()
 
+    if not phone_number or phone_number == "unknown":
+        phone_number = "Web-Sandbox-Test"
+        caller_name = caller_name or "Test Caller"
+
     is_outbound_call = bool(phone_number and job_meta)
-    caller_phone = db.normalize_phone_number(phone_number or "") or "unknown"
+    caller_phone = db.normalize_phone_number(phone_number) or phone_number
 
     if is_rate_limited(caller_phone):
         logger.warning("[RATE-LIMIT] Blocked %s", caller_phone)
@@ -847,13 +979,7 @@ async def entrypoint(ctx: JobContext) -> None:
     if history_suffix:
         live_config["agent_instructions"] = str(live_config.get("agent_instructions") or "") + history_suffix
 
-    try:
-        from livekit.agents import noise_cancellation as nc
-
-        noise_cancel = nc.BVC()
-        room_input = RoomInputOptions(close_on_disconnect=False, noise_cancellation=noise_cancel)
-    except Exception:
-        room_input = RoomInputOptions(close_on_disconnect=False)
+    room_input = RoomInputOptions(close_on_disconnect=False)
 
     session = AgentSession(
         llm=build_gemini_realtime_model(live_config),
@@ -862,6 +988,11 @@ async def entrypoint(ctx: JobContext) -> None:
     )
 
     sip_participant_identity = get_sip_participant_identity(phone_number)
+    if not is_outbound_call and detected_sip_identity:
+        logger.info("[ROOM] Using detected identity for inbound session: %s (Calculated was: %s)", 
+                    detected_sip_identity, sip_participant_identity)
+        sip_participant_identity = detected_sip_identity
+    
     outbound_trunk_id = get_outbound_sip_trunk_id(live_config, job_meta)
     if is_outbound_call:
         if not outbound_trunk_id:
@@ -920,6 +1051,7 @@ async def entrypoint(ctx: JobContext) -> None:
         live_config=live_config,
         caller_profile=caller_profile,
         runtime_state=runtime_state,
+        shutdown_fn=ctx.shutdown,
     )
     agent_tools.ctx_api = ctx.api
     agent_tools.room_name = ctx.room.name
@@ -1056,7 +1188,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
     async def _clear_agent_speaking_after_cooldown() -> None:
         nonlocal agent_is_speaking
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(0.6)
         agent_is_speaking = False
 
     async def _flush_active_turn_metric(*, reason: str = "") -> None:
@@ -1093,7 +1225,9 @@ async def entrypoint(ctx: JobContext) -> None:
         metrics = item.metrics or {}
         if item.role == "user":
             if item.text_content:
-                _record_user_turn(str(item.text_content or ""))
+                transcript = str(item.text_content or "").strip()
+                logger.info("🎤 [STT ] User said: %s", transcript)
+                _record_user_turn(transcript)
             active_turn = runtime_state.get("active_turn")
             if active_turn:
                 stt_ms = (
@@ -1105,6 +1239,8 @@ async def entrypoint(ctx: JobContext) -> None:
         elif item.role == "assistant":
             text = str(item.text_content or "").strip()
             if text:
+                logger.info("🤖 [LLM ] AI response: %s", text)
+                logger.info("🔊 [TTS ] Speaking: %s", text[:120] + ("..." if len(text) > 120 else ""))
                 asyncio.create_task(_log_transcript("assistant", text))
             active_turn = runtime_state.get("active_turn")
             if not active_turn or not active_turn.get("turn_index"):
@@ -1118,6 +1254,15 @@ async def entrypoint(ctx: JobContext) -> None:
             active_turn.setdefault("metadata", {})
             active_turn["metadata"]["assistant_chars"] = len(text)
             runtime_state["completed_turns"] = int(runtime_state.get("completed_turns") or 0) + 1
+            # ── Per-turn latency summary ──
+            logger.info(
+                "⏱  [TURN] #%s latency → STT: %sms | LLM: %sms | TTS: %sms | Total: %sms",
+                active_turn.get("turn_index"),
+                active_turn.get("stt_endpoint_ms"),
+                active_turn.get("llm_first_token_ms"),
+                active_turn.get("tts_first_audio_ms"),
+                active_turn.get("total_turn_ms"),
+            )
             asyncio.create_task(_flush_active_turn_metric())
 
     @session.on("user_state_changed")
@@ -1133,7 +1278,10 @@ async def entrypoint(ctx: JobContext) -> None:
     def _on_user_input_transcribed(ev) -> None:
         if not getattr(ev, "is_final", False):
             return
-        _record_user_turn(getattr(ev, "transcript", ""))
+        transcript = getattr(ev, "transcript", "")
+        if transcript:
+            logger.info("🎤 [STT ] Transcribed (final): %s", transcript)
+        _record_user_turn(transcript)
 
     @session.on("agent_state_changed")
     def _on_agent_state_changed(ev) -> None:
@@ -1211,17 +1359,12 @@ async def entrypoint(ctx: JobContext) -> None:
         booking_status_msg = "No booking"
         if agent_tools.booking_intent:
             intent = agent_tools.booking_intent
-            result = await async_create_booking(
-                start_time=intent["start_time"],
-                caller_name=intent["caller_name"] or "Unknown Caller",
-                caller_phone=intent["caller_phone"],
-                notes=intent["notes"],
-            )
-            if result.get("success"):
+            if intent.get("confirmed") and intent.get("booking_id"):
                 booking_was_confirmed = True
-                booking_status_msg = f"Booking Confirmed: {result.get('booking_id')}"
+                booking_status_msg = f"Booking Confirmed: {intent.get('booking_id')}"
             else:
-                booking_status_msg = f"Booking Failed: {result.get('message')}"
+                # This fallback handles cases where save_booking_intent was called but failed or didn't confirm
+                booking_status_msg = f"Booking Pending/Failed"
             agent_tools.booking_intent = None
         else:
             summary_text = transcript_text or "Caller did not schedule during this call."
@@ -1233,6 +1376,11 @@ async def entrypoint(ctx: JobContext) -> None:
                 config=live_config,
             )
 
+        duration_minutes = duration / 60.0
+        cost_vobiz_inr = round(duration_minutes * 0.40, 2)
+        cost_livekit_inr = 0.00
+        cost_gemini_inr = round(duration_minutes * 0.85, 2)
+        cost_total_inr = round(cost_vobiz_inr + cost_livekit_inr + cost_gemini_inr, 2)
         estimated_cost = round((duration / 60) * 0.008 + (len(transcript_text) / 1000) * 0.003, 5)
         call_dt = call_start_time.astimezone(_IST)
 
@@ -1254,15 +1402,17 @@ async def entrypoint(ctx: JobContext) -> None:
             except Exception as exc:
                 logger.warning("[RECORDING] Stop failed: %s", exc)
 
-        await asyncio.to_thread(db.upsert_active_call, ctx.room.name, caller_phone, caller_name, "completed")
+        final_phone = agent_tools._effective_phone()
+        final_name = agent_tools._effective_name()
+        await asyncio.to_thread(db.upsert_active_call, ctx.room.name, final_phone, final_name, "completed")
         await asyncio.to_thread(
             db.save_call_log,
-            caller_phone,
+            final_phone,
             duration,
             transcript_text,
             booking_status_msg,
             recording_url,
-            agent_tools.caller_name or "",
+            final_name,
             "unknown",
             estimated_cost,
             call_dt.date().isoformat(),
@@ -1271,6 +1421,10 @@ async def entrypoint(ctx: JobContext) -> None:
             booking_was_confirmed,
             interrupt_count,
             ctx.room.name,
+            cost_vobiz_inr=cost_vobiz_inr,
+            cost_livekit_inr=cost_livekit_inr,
+            cost_gemini_inr=cost_gemini_inr,
+            cost_total_inr=cost_total_inr,
         )
 
     ctx.add_shutdown_callback(unified_shutdown_hook)

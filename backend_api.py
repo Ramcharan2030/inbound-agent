@@ -13,6 +13,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from backend_config import (
@@ -50,6 +51,14 @@ app = FastAPI(
     title="SPXAgent Backend API",
     version="1.0.0",
     description="Headless backend API for the backend-only Gemini 3.1 Live branch.",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -668,6 +677,116 @@ async def api_call_bulk(request: Request):
             results.append({"phone": phone, "status": "error", "message": "Unable to dispatch this call right now."})
     return {"results": results, "total": len(results)}
 
+
+# ── Doctor Schedule Routes ────────────────────────────────────────────────────
+
+@app.get("/api/schedule")
+async def api_get_schedule():
+    """Return the full weekly schedule (all 7 days)."""
+    try:
+        import db_schedule
+        return {"status": "ok", "schedule": db_schedule.fetch_schedule()}
+    except Exception as exc:
+        logger.error(f"Error fetching schedule: {exc}")
+        return internal_error_response("Unable to fetch schedule right now.")
+
+
+@app.post("/api/schedule/{day_of_week}")
+async def api_update_schedule_day(day_of_week: int, request: Request):
+    """Update working hours for a specific day (0=Monday … 6=Sunday)."""
+    try:
+        import db_schedule
+        data = await request.json()
+        updated = db_schedule.update_schedule_day(day_of_week, data)
+        return {"status": "ok", "day": updated}
+    except ValueError as exc:
+        return JSONResponse({"status": "error", "message": str(exc)}, status_code=400)
+    except Exception as exc:
+        logger.error(f"Error updating schedule day {day_of_week}: {exc}")
+        return internal_error_response("Unable to update schedule right now.")
+
+
+@app.get("/api/schedule/blocked")
+async def api_get_blocked_days(year: int | None = None, month: int | None = None):
+    """List blocked dates, optionally filtered by year+month."""
+    try:
+        import db_schedule
+        blocked = db_schedule.fetch_blocked_days(year=year, month=month)
+        return {"status": "ok", "blocked_days": blocked}
+    except Exception as exc:
+        logger.error(f"Error fetching blocked days: {exc}")
+        return internal_error_response("Unable to fetch blocked days right now.")
+
+
+@app.post("/api/schedule/blocked")
+async def api_block_day(request: Request):
+    """Block a specific date. Body: {blocked_date: 'YYYY-MM-DD', reason: '...'}"""
+    try:
+        import db_schedule
+        data = await request.json()
+        blocked_date = str(data.get("blocked_date") or "").strip()
+        reason = str(data.get("reason") or "").strip()
+        if not blocked_date:
+            return JSONResponse({"status": "error", "message": "blocked_date is required."}, status_code=400)
+        result = db_schedule.block_day(blocked_date, reason=reason)
+        return {"status": "ok", "blocked_day": result}
+    except ValueError as exc:
+        return JSONResponse({"status": "error", "message": str(exc)}, status_code=400)
+    except Exception as exc:
+        logger.error(f"Error blocking day: {exc}")
+        return internal_error_response("Unable to block day right now.")
+
+
+@app.delete("/api/schedule/blocked/{blocked_date}")
+async def api_unblock_day(blocked_date: str):
+    """Unblock a specific date. blocked_date format: YYYY-MM-DD"""
+    try:
+        import db_schedule
+        db_schedule.unblock_day(blocked_date)
+        return {"status": "ok", "unblocked": blocked_date}
+    except Exception as exc:
+        logger.error(f"Error unblocking day {blocked_date}: {exc}")
+        return internal_error_response("Unable to unblock day right now.")
+
+
+@app.get("/api/notifications")
+async def api_get_notifications(limit: int = 50):
+    """
+    Return appointment notifications feed — all recent bookings and cancellations.
+    Ordered newest first.
+    """
+    _load_runtime_config()
+    import db
+
+    try:
+        appointments = db.fetch_appointments(limit=limit)
+        notifications = []
+        for appt in sorted(
+            appointments,
+            key=lambda a: str(a.get("created_at") or ""),
+            reverse=True,
+        ):
+            status = str(appt.get("status") or "").lower()
+            notif_type = "booking" if status == "scheduled" else status
+            notifications.append({
+                "id": appt.get("id"),
+                "type": notif_type,
+                "contact_name": appt.get("contact_name") or "Unknown",
+                "contact_phone": appt.get("contact_phone") or "",
+                "scheduled_start": appt.get("scheduled_start"),
+                "scheduled_end": appt.get("scheduled_end"),
+                "notes": appt.get("notes") or "",
+                "source": appt.get("source") or "",
+                "created_at": appt.get("created_at"),
+                "updated_at": appt.get("updated_at"),
+            })
+        return {"status": "ok", "notifications": notifications}
+    except Exception as exc:
+        logger.error(f"Error fetching notifications: {exc}")
+        return {"status": "ok", "notifications": []}
+
+
+# ── Health Check ──────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health_check():

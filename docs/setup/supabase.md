@@ -13,13 +13,14 @@ Run these files in order:
 3. `sql/supabase/migration_v3.sql`
 4. `sql/supabase/migration_v4_voice_metrics.sql`
 5. `sql/supabase/migration_v5_kb.sql`
+6. `sql/supabase/migration_v8_doctor_schedule.sql`
 
 ## Legacy upgrade
 
 If the deployment previously used the WhatsApp/demo/dashboard branch, run this after the files above:
 
-6. `sql/supabase/migration_v6_backend_cleanup.sql`
-7. `sql/supabase/migration_v7_kb_demo_sources.sql`
+7. `sql/supabase/migration_v6_backend_cleanup.sql`
+8. `sql/supabase/migration_v7_kb_demo_sources.sql`
 
 ## Tables retained in this branch
 
@@ -27,6 +28,8 @@ If the deployment previously used the WhatsApp/demo/dashboard branch, run this a
 - `call_transcripts`
 - `active_calls`
 - `appointments`
+- `doctor_schedule`
+- `doctor_blocked_days`
 - `call_turn_metrics`
 - KB tables from `migration_v5_kb.sql`
 

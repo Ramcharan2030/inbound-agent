@@ -39,11 +39,12 @@ Run these SQL files in Supabase:
 3. `sql/supabase/migration_v3.sql`
 4. `sql/supabase/migration_v4_voice_metrics.sql`
 5. `sql/supabase/migration_v5_kb.sql`
+6. `sql/supabase/migration_v8_doctor_schedule.sql`
 
 If you are upgrading from the old WhatsApp/dashboard branch, also run:
 
-6. `sql/supabase/migration_v6_backend_cleanup.sql`
-7. `sql/supabase/migration_v7_kb_demo_sources.sql`
+7. `sql/supabase/migration_v6_backend_cleanup.sql`
+8. `sql/supabase/migration_v7_kb_demo_sources.sql`
 
 ## 4. Start
 

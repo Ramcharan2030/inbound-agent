@@ -55,7 +55,6 @@ def _parse_port(raw_value: str | None, default: int) -> int:
 
 def _is_port_available(host: str, port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((host, port))
         except OSError:
@@ -93,12 +92,8 @@ def build_services(
         services.append(
             {
                 "name": "api",
-                "cmd": [python_cmd, "-m", "uvicorn", "backend_api:app"],
+                "cmd": [python_cmd, "-m", "uvicorn", "backend_api:app", "--host", api_host, "--port", str(api_port)],
                 "cwd": str(ROOT),
-                "env": {
-                    "HOST": api_host,
-                    "PORT": str(api_port),
-                },
             }
         )
     if not args.no_agent:
@@ -153,6 +148,20 @@ def stop_process(name: str, process: subprocess.Popen[str]) -> None:
         print(f"[stack] Failed to stop {name}: {exc}", flush=True)
 
 
+def _check_disk_space() -> None:
+    try:
+        import shutil
+        _, _, free = shutil.disk_usage("C:\\" if os.name == "nt" else "/")
+        free_gb = free / (1024**3)
+        if free_gb < 1.0:
+            print(f"[stack] WARNING: Critical disk space on system drive ({free_gb:.2f} GB free).", flush=True)
+            print("[stack] This may cause MemoryErrors or DLL load failures.", flush=True)
+        elif free_gb < 5.0:
+            print(f"[stack] Note: System drive has {free_gb:.2f} GB free. For best stability, aim for >10 GB.", flush=True)
+    except Exception:
+        pass
+
+
 def start_services(services: list[dict]) -> list[tuple[str, subprocess.Popen[str]]]:
     procs: list[tuple[str, subprocess.Popen[str]]] = []
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
@@ -177,11 +186,12 @@ def start_services(services: list[dict]) -> list[tuple[str, subprocess.Popen[str
         thread = threading.Thread(target=stream_output, args=(service["name"], process), daemon=True)
         thread.start()
         print(f"[stack] Started {service['name']} (pid {process.pid})", flush=True)
-        time.sleep(0.5)
+        time.sleep(2.0)
     return procs
 
 
 def main() -> int:
+    _check_disk_space()
     args = parse_args()
     api_host = str(os.environ.get("HOST", DEFAULT_API_HOST)).strip() or DEFAULT_API_HOST
     agent_host = str(os.environ.get("AGENT_HOST", DEFAULT_AGENT_HOST)).strip() or DEFAULT_AGENT_HOST

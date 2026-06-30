@@ -5,6 +5,8 @@
 # Local config and generated runtime files
 .DS_Store
 *.log
+.lh/
+scratch/
 config.json
 config.*backup*.json
 configs/*.json
