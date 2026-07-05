@@ -1,13 +1,20 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
 @import "tailwindcss";
 
+
+/* ─────────────────────────────────────────────────────────────
+   ASolutions Design System
+   Brand: Deep space black + Electric blue + Gold accent
+───────────────────────────────────────────────────────────── */
+
 :root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
   line-height: 1.5;
   font-weight: 400;
 
   color-scheme: dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #0a0a0a;
+  color: #f8fafc;
+  background-color: #08090c;
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -20,20 +27,243 @@ body {
   display: flex;
   min-width: 320px;
   min-height: 100vh;
+  background-color: #08090c;
 }
 
 #root {
   width: 100%;
 }
 
+/* ─── Tailwind v4 Design Tokens ───────────────────────────── */
 @theme {
-  --color-brand-primary: #3b82f6;
-  --color-brand-secondary: #1d4ed8;
-  --color-surface-base: #0a0a0a;
-  --color-surface-card: #141414;
-  --color-surface-hover: #1f1f1f;
-  --color-border-subtle: #262626;
-  --color-text-primary: #f5f5f5;
-  --color-text-secondary: #a3a3a3;
-  --color-text-muted: #737373;
+  /* Base surfaces */
+  --color-base:           #08090c;
+  --color-surface-0:      #08090c;
+  --color-surface-1:      #0e0f14;
+  --color-surface-2:      #13141a;
+  --color-surface-3:      #1a1c24;
+  --color-surface-hover:  #1e2028;
+
+  /* Borders */
+  --color-border-dim:     #1c1e27;
+  --color-border-subtle:  #252833;
+  --color-border-mid:     #303444;
+
+  /* Text */
+  --color-text-primary:   #f8fafc;
+  --color-text-secondary: #94a3b8;
+  --color-text-muted:     #64748b;
+  --color-text-dim:       #3f4557;
+
+  /* Brand Blue */
+  --color-brand-900:      #0c1a3e;
+  --color-brand-800:      #1e3a8a;
+  --color-brand-700:      #1d4ed8;
+  --color-brand-600:      #2563eb;
+  --color-brand-500:      #3b82f6;
+  --color-brand-400:      #60a5fa;
+  --color-brand-300:      #93c5fd;
+  --color-brand-200:      #bfdbfe;
+
+  /* Gold accent */
+  --color-gold-600:       #d97706;
+  --color-gold-500:       #f59e0b;
+  --color-gold-400:       #fbbf24;
+  --color-gold-300:       #fcd34d;
+  --color-gold-200:       #fde68a;
+
+  /* Status colors */
+  --color-success-bg:     #052e16;
+  --color-success-border: #14532d;
+  --color-success-text:   #4ade80;
+  --color-warning-bg:     #1c1400;
+  --color-warning-border: #713f12;
+  --color-warning-text:   #facc15;
+  --color-danger-bg:      #1c0505;
+  --color-danger-border:  #7f1d1d;
+  --color-danger-text:    #f87171;
+}
+
+/* ─── Scrollbar Styling ───────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0e0f14;
+}
+::-webkit-scrollbar-thumb {
+  background: #252833;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #303444;
+}
+
+/* ─── Keyframe Animations ─────────────────────────────────── */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.4); }
+  50%       { box-shadow: 0 0 0 6px rgba(37, 99, 235, 0); }
+}
+
+/* ─── Utility Classes ─────────────────────────────────────── */
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.35s ease-out both;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.25s ease-out both;
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.3s ease-out both;
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s infinite;
+}
+
+/* Shimmer skeleton loader */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    #1a1c24 25%,
+    #252833 50%,
+    #1a1c24 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 6px;
+}
+
+/* Glass card effect */
+.glass-card {
+  background: rgba(14, 15, 20, 0.8);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(37, 40, 51, 0.8);
+}
+
+/* Glow border for active/featured elements */
+.glow-blue {
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.3),
+              0 0 16px rgba(37, 99, 235, 0.08);
+}
+
+.glow-gold {
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.3),
+              0 0 16px rgba(245, 158, 11, 0.08);
+}
+
+/* Active nav item gradient */
+.nav-active {
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.12), rgba(37, 99, 235, 0.05));
+  border-left: 2px solid #2563eb;
+}
+
+/* Brand gradient text */
+.gradient-text {
+  background: linear-gradient(135deg, #60a5fa, #2563eb);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.gradient-text-gold {
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Page transition wrapper */
+.page-enter {
+  animation: fade-in-up 0.3s ease-out both;
+}
+
+/* Stagger children animations */
+.stagger-children > * {
+  animation: fade-in-up 0.3s ease-out both;
+}
+.stagger-children > *:nth-child(1) { animation-delay: 0ms; }
+.stagger-children > *:nth-child(2) { animation-delay: 60ms; }
+.stagger-children > *:nth-child(3) { animation-delay: 120ms; }
+.stagger-children > *:nth-child(4) { animation-delay: 180ms; }
+.stagger-children > *:nth-child(5) { animation-delay: 240ms; }
+.stagger-children > *:nth-child(6) { animation-delay: 300ms; }
+
+/* Divider with label */
+.divider-label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #64748b;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+.divider-label::before,
+.divider-label::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #1c1e27;
+}
+
+/* Number badge counter */
+.counter-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  background: #2563eb;
+  color: white;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 9px;
+}
+
+/* Input date/time color fix for dark theme */
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  opacity: 0.5;
+  cursor: pointer;
 }

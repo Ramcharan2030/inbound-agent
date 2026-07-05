@@ -20,8 +20,8 @@ DEFAULT_GEMINI_LIVE_CONNECT_TIMEOUT = 20.0
 DEFAULT_GEMINI_LIVE_CONNECT_RETRIES = 2
 DEFAULT_GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
 DEFAULT_FIRST_LINE = (
-    "Namaste! This is Aryan from SPX AI - we help businesses automate with AI. "
-    "Hmm, may I ask what kind of business you run?"
+    "Namaste! This is Aryan from the property sales team. "
+    "I can help with project details and site visit bookings. Which property are you interested in?"
 )
 
 DEFAULT_CONFIG: dict[str, Any] = {

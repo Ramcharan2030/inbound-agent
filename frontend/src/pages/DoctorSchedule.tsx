@@ -1,11 +1,12 @@
 import React, { useState, useMemo } from 'react';
-import { format, startOfMonth, endOfMonth, eachDayOfInterval, getDay, isSameMonth, isToday, isSameDay } from 'date-fns';
+import { format, startOfMonth, endOfMonth, eachDayOfInterval, getDay, isSameMonth, isToday } from 'date-fns';
 import {
   CalendarDays, ChevronLeft, ChevronRight, BanIcon, CheckCircle2,
-  Bell, Phone, Clock, User, AlertTriangle, Stethoscope, Save,
+  Bell, Phone, Clock, User, AlertTriangle, Building2, Save,
   RefreshCw, XCircle, Calendar
 } from 'lucide-react';
-import { Card, Badge, Button, Input, Modal } from '../components/ui';
+import { Card, Badge, Button, Input, Modal, PageHeader } from '../components/ui';
+import { useToast } from '../context/ToastContext';
 import { useSchedule, useBlockedDays, useNotifications } from '../hooks/useDoctorSchedule';
 import { ScheduleDay, BlockedDay } from '../api/types';
 
@@ -41,7 +42,7 @@ function NotificationsPanel() {
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <Bell size={18} className="text-blue-400" />
-          <h3 className="text-base font-semibold text-white">Appointment Notifications</h3>
+          <h3 className="text-base font-semibold text-white">Site Visit Notifications</h3>
           <span className="text-xs text-zinc-500 ml-1">Auto-refreshes every 10s</span>
         </div>
         <button onClick={refresh} className="text-zinc-500 hover:text-white transition-colors p-1 rounded">
@@ -57,7 +58,7 @@ function NotificationsPanel() {
         ) : notifications.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-center">
             <Bell size={32} className="text-zinc-700 mb-3" />
-            <p className="text-zinc-500 text-sm">No appointment notifications yet.</p>
+            <p className="text-zinc-500 text-sm">No site visit notifications yet.</p>
             <p className="text-zinc-600 text-xs mt-1">Bookings made by the agent or manually will appear here.</p>
           </div>
         ) : (
@@ -119,6 +120,8 @@ function ScheduleEditor() {
     setSavedDays(prev => { const n = new Set(prev); n.delete(dayIdx); return n; });
   };
 
+  const { success: toastSuccess, error: toastError } = useToast();
+
   const handleSaveDay = async (day: ScheduleDay, idx: number) => {
     try {
       await updateDay(day.day_of_week, {
@@ -129,9 +132,10 @@ function ScheduleEditor() {
         is_active: day.is_active,
       });
       setSavedDays(prev => new Set(prev).add(idx));
+      toastSuccess('Schedule Saved', `${day.day_name} hours updated.`);
       setTimeout(() => setSavedDays(prev => { const n = new Set(prev); n.delete(idx); return n; }), 2000);
     } catch (e: any) {
-      alert('Failed to save: ' + e.message);
+      toastError('Save Failed', e.message);
     }
   };
 
@@ -259,14 +263,17 @@ function CalendarView() {
     setIsModalOpen(true);
   };
 
+  const { success: toastSuccess, error: toastError } = useToast();
+
   const handleBlock = async () => {
     if (!selectedDay) return;
     setActionLoading(true);
     try {
       await blockDay(toDateKey(selectedDay), blockReason);
+      toastSuccess('Day Blocked', format(selectedDay, 'MMM d') + ' is now unavailable for visits.');
       setIsModalOpen(false);
     } catch (e: any) {
-      alert('Failed to block: ' + e.message);
+      toastError('Block Failed', e.message);
     } finally {
       setActionLoading(false);
     }
@@ -277,9 +284,10 @@ function CalendarView() {
     setActionLoading(true);
     try {
       await unblockDay(toDateKey(selectedDay));
+      toastSuccess('Day Unblocked', format(selectedDay, 'MMM d') + ' is now available for visits.');
       setIsModalOpen(false);
     } catch (e: any) {
-      alert('Failed to unblock: ' + e.message);
+      toastError('Unblock Failed', e.message);
     } finally {
       setActionLoading(false);
     }
@@ -363,7 +371,7 @@ function CalendarView() {
       <div className="flex items-center gap-4 mt-4 pt-3 border-t border-zinc-800">
         <div className="flex items-center gap-1.5">
           <div className="w-3 h-3 rounded bg-red-500/20 border border-red-500/30" />
-          <span className="text-xs text-zinc-500">Doctor blocked</span>
+          <span className="text-xs text-zinc-500">Visit blocked</span>
         </div>
         <div className="flex items-center gap-1.5">
           <div className="w-3 h-3 rounded bg-blue-600/20 border border-blue-500/30" />
@@ -392,7 +400,7 @@ function CalendarView() {
                     {selectedBlockedInfo?.reason && (
                       <p className="text-xs text-red-400/80 mt-1">Reason: {selectedBlockedInfo.reason}</p>
                     )}
-                    <p className="text-xs text-zinc-500 mt-1">The AI agent will not accept any bookings for this date.</p>
+                    <p className="text-xs text-zinc-500 mt-1">The AI agent will not accept site visit bookings for this date.</p>
                   </div>
                 </div>
                 <div className="flex justify-end gap-3">
@@ -412,14 +420,14 @@ function CalendarView() {
                 <div className="flex items-start gap-3 p-3 rounded-xl bg-zinc-800/60 border border-zinc-700/40">
                   <Calendar size={18} className="text-zinc-400 mt-0.5 shrink-0" />
                   <p className="text-sm text-zinc-300">
-                    Block this day to prevent the AI agent from accepting new appointments. 
-                    The doctor will be shown as unavailable.
+                    Block this day to prevent the AI agent from accepting new site visits. 
+                    The sales team will be shown as unavailable.
                   </p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-zinc-400 mb-2">Reason (optional)</label>
                   <Input
-                    placeholder="e.g. Emergency, Vacation, Conference, Leave..."
+                    placeholder="e.g. Team offsite, project event, holiday, maintenance..."
                     value={blockReason}
                     onChange={e => setBlockReason(e.target.value)}
                   />
@@ -448,21 +456,13 @@ function CalendarView() {
 
 export const DoctorSchedule = () => {
   return (
-    <div className="space-y-8">
-      {/* Header */}
-      <div className="flex items-end justify-between">
-        <div>
-          <div className="flex items-center gap-3 mb-1">
-            <div className="w-9 h-9 rounded-xl bg-violet-600/20 border border-violet-500/30 flex items-center justify-center">
-              <Stethoscope size={18} className="text-violet-400" />
-            </div>
-            <h2 className="text-3xl font-bold tracking-tight text-white">Doctor Schedule</h2>
-          </div>
-          <p className="text-zinc-400 mt-1 ml-12">
-            Manage the doctor's working hours, block unavailable days, and view appointment notifications.
-          </p>
-        </div>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Visit Schedule"
+        subtitle="Manage site visit hours, block unavailable days, and view visit booking notifications."
+        icon={Building2}
+        iconColor="text-blue-400"
+      />
 
       {/* Info banner */}
       <div className="flex items-start gap-3 p-4 rounded-xl bg-blue-500/5 border border-blue-500/20">

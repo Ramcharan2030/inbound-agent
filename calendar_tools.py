@@ -47,8 +47,8 @@ def _time_str_to_datetime(day: date, time_str: str) -> datetime:
 def _get_sessions_for_day(day: date) -> list[tuple[datetime, datetime]]:
     """
     Return list of (session_start_dt, session_end_dt) for the given date.
-    Reads from doctor_schedule DB with fallback to hardcoded defaults.
-    Returns empty list if doctor is off or date is blocked.
+    Reads from the schedule DB with fallback to hardcoded defaults.
+    Returns empty list if site visits are unavailable or the date is blocked.
     """
     try:
         import db_schedule
@@ -99,10 +99,10 @@ def validate_appointment_window(start_dt: datetime, end_dt: datetime) -> None:
         try:
             import db_schedule
             if db_schedule.is_day_blocked(start_dt.date()):
-                raise CalendarValidationError("The doctor is not available on this date.")
+                raise CalendarValidationError("Site visits are not available on this date.")
         except ImportError:
             pass
-        raise CalendarValidationError("The doctor is not available on this day.")
+        raise CalendarValidationError("Site visits are not available on this day.")
 
     # Slot must fall within at least one session
     slot_ok = any(
@@ -120,7 +120,7 @@ def validate_appointment_window(start_dt: datetime, end_dt: datetime) -> None:
 
 async def get_available_slots(date_str: str) -> list:
     """
-    Fetch open slots for a given date from the internal appointments calendar.
+    Fetch open site visit slots for a given date from the internal appointments calendar.
     date_str: "YYYY-MM-DD"
     """
     try:
@@ -213,7 +213,7 @@ async def async_create_booking(
         appointment = await asyncio.to_thread(
             create_appointment,
             {
-                "title": "Appointment",
+                "title": "Site Visit",
                 "contact_name": caller_name or "Unknown Caller",
                 "contact_phone": caller_phone,
                 "scheduled_start": start_dt.isoformat(),

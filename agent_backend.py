@@ -579,12 +579,12 @@ class AgentTools(llm.ToolContext):
         active_turn["tool_ms"] = round(float(active_turn.get("tool_ms") or 0.0) + elapsed_ms, 2)
 
     @llm.function_tool(description=(
-        "Transfer this call to the doctor or a human agent immediately. "
-        "Use this when: (1) the caller says it is an emergency, urgent, or critical, "
-        "(2) they describe severe symptoms (chest pain, breathing trouble, high fever, accident, etc.), "
-        "(3) they explicitly ask to speak with the doctor or a human, "
-        "(4) the situation is clearly beyond the scope of scheduling. "
-        "Do NOT ask for confirmation before transferring in an emergency — transfer immediately. "
+        "Transfer this call to a sales manager or human agent immediately. "
+        "Use this when: (1) the caller asks for a human, manager, negotiation, pricing approval, or legal/loan help, "
+        "(2) the caller is upset or the situation is sensitive, "
+        "(3) they explicitly ask to speak with a human, "
+        "(4) the situation is clearly beyond the scope of inquiry handling and site visit scheduling. "
+        "Do NOT ask repeated confirmation before transferring when the caller clearly needs a human. "
         "IMPORTANT: After calling this tool, do NOT call end_call. The system will handle the disconnect automatically."
     ))
     async def transfer_call(self) -> str:
@@ -670,17 +670,17 @@ class AgentTools(llm.ToolContext):
         return ""
 
     @llm.function_tool(description=(
-        "Confirm and save the appointment in the database immediately. "
+        "Confirm and save the site visit booking in the database immediately. "
         "Use this as soon as the caller agrees to a specific time. "
         "Returns the booking confirmation details including a booking ID. "
-        "Important: Always include the branch name, treatment, and any special requests in the notes."
+        "Important: Always include the property/project name, preferred unit type, budget, purpose, inquiry topic, and any special requests in the notes."
     ))
     async def save_booking_intent(
         self,
         start_time: Annotated[str, "ISO 8601 datetime such as 2026-03-01T10:00:00+05:30"],
         caller_name: Annotated[str, "Full name of the caller"],
         caller_phone: Annotated[str, "Phone number of the caller, or empty if the trusted session number should be reused."] = "",
-        notes: Annotated[str, "Booking notes, branch name, treatment, or special requests"] = "",
+        notes: Annotated[str, "Site visit notes: property/project name, unit type, budget, purpose, inquiry topic, and special requests"] = "",
     ) -> str:
         started_at = time.monotonic()
         try:
@@ -718,7 +718,7 @@ class AgentTools(llm.ToolContext):
         finally:
             self._record_tool_time(started_at)
 
-    @llm.function_tool(description="Check available appointment slots for a date in YYYY-MM-DD format.")
+    @llm.function_tool(description="Check available site visit slots for a date in YYYY-MM-DD format.")
     async def check_availability(self, date: Annotated[str, "Date in YYYY-MM-DD format"]) -> str:
         started_at = time.monotonic()
         try:
@@ -794,8 +794,9 @@ class OutboundAssistant(Agent):
         base_instructions = str(self._live_config.get("agent_instructions") or "").strip()
         if not base_instructions:
             base_instructions = (
-                "You are Aryan from SPX AI. Qualify the caller, answer with confirmed information, and help "
-                "them book an appointment or transfer to a human when needed. "
+                "You are Aryan, a real-estate voice receptionist for a property sales team. "
+                "Qualify the caller, answer property questions using confirmed information, and help "
+                "them book a site visit or transfer to a human when needed. "
                 "Speak with a natural, conversational, and professional cadence. Allow for brief pauses and do not rush the caller."
             )
 
@@ -832,17 +833,15 @@ class OutboundAssistant(Agent):
             + "Do not promise WhatsApp messages, reminders, demo links, or follow-up automation.\n"
             + "Use the knowledge-base tool before guessing.\n"
             + "When facts are not confirmed, say so plainly.\n"
-            + "Default next steps are an appointment, a callback, or a human transfer.\n"
+            + "Default next steps are a site visit, a callback, or a human transfer.\n"
+            + "For real-estate inquiries, gather the property/project of interest, preferred location, unit type, budget range, buying or rental purpose, visit date preference, caller name, and callback number.\n"
+            + "Ask only one or two concise questions at a time, and do not pressure the caller.\n"
             + "IMPORTANT: You MUST call save_booking_intent as soon as the caller agrees to a slot. "
-            + "An appointment is NOT booked until you call that tool. "
-            + "Include the branch name and treatment details in the notes field of save_booking_intent.\n\n"
-            + "[EMERGENCY PROTOCOL]\n"
-            + "If the caller mentions any of the following, IMMEDIATELY say 'I am connecting you to the doctor right now' "
-            + "and call transfer_call WITHOUT asking any further questions:\n"
-            + "- Emergency, urgent, critical, life-threatening\n"
-            + "- Severe symptoms: chest pain, difficulty breathing, unconscious, accident, heavy bleeding, stroke, heart attack\n"
-            + "- Phrases like: 'it's serious', 'need the doctor now', 'can't wait', 'very bad condition'\n"
-            + "Do NOT try to book an appointment in an emergency. Transfer the call immediately.\n\n"
+            + "A site visit is NOT booked until you call that tool. "
+            + "Include property/project name, unit type, budget, purpose, inquiry topic, and special requests in the notes field of save_booking_intent.\n\n"
+            + "[HUMAN TRANSFER PROTOCOL]\n"
+            + "If the caller asks for final pricing, discounts, negotiation, legal documents, loan approval, payment terms, a manager, or anything beyond confirmed KB information, say 'I am connecting you to our sales team right now' and call transfer_call.\n"
+            + "Do not invent property availability, prices, possession dates, RERA/legal details, or financing terms. Use the knowledge-base tool before answering factual property questions.\n\n"
             + "[CALL ENDING DIRECTIVE]\n"
             + "After you have completed your task (booking confirmed, question answered, or transfer initiated), "
             + "give a brief warm goodbye and IMMEDIATELY call the end_call tool to disconnect the call. "

@@ -1,6 +1,6 @@
-# SPXAgent Operations Console
+# AutoSolutions Operations Console
 
-Premium frontend for the SPXAgent voice AI system.
+Premium frontend for the AutoSolutions real-estate voice assistant system.
 
 ## Stack
 - Vite + React + TypeScript
@@ -32,7 +32,7 @@ Premium frontend for the SPXAgent voice AI system.
 - **Overview**: Real-time stats and system health.
 - **Call Logs**: Detailed history with transcript viewer/downloader.
 - **Contacts**: CRM view of discovered customers.
-- **Appointments**: Full lifecycle management for bookings.
+- **Site Visits**: Full lifecycle management for property visit bookings.
 - **Knowledge Base**: Website crawling, PDF uploading, and search testing.
 - **Outbound**: Single and bulk call dispatching.
 - **Configuration**: Advanced settings management for the Gemini runtime.
