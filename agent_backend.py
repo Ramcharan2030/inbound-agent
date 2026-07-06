@@ -543,6 +543,7 @@ class AgentTools(llm.ToolContext):
         self.ctx_api = None
         self.room_name = None
         self._sip_identity = None
+        self._session_ref: AgentSession | None = None  # set after session.start()
         self.live_config = live_config or {}
         self._shutdown_fn = shutdown_fn
         self.caller_profile = caller_profile or {
@@ -778,11 +779,38 @@ class AgentTools(llm.ToolContext):
         finally:
             self._record_tool_time(started_at)
 
-    @llm.function_tool(description="Search the knowledge base for PDF excerpts and website content.")
+    # ── Filler phrases to play while slow tools run ──────────────────────────
+    _FILLER_PHRASES = [
+        "Let me check that for you one moment.",
+        "Just a second, let me look that up.",
+        "Give me a moment while I find that information.",
+        "Sure, let me pull that up right now.",
+    ]
+    _filler_index: int = 0
+
+    def _next_filler(self) -> str:
+        phrase = self._FILLER_PHRASES[self._filler_index % len(self._FILLER_PHRASES)]
+        self._filler_index += 1
+        return phrase
+
+    @llm.function_tool(description=(
+        "Search the knowledge base for PDF excerpts and website content. "
+        "Always call this before answering factual questions about properties, pricing, or availability."
+    ))
     async def search_knowledge_base(self, query: Annotated[str, "Knowledge base question in natural language"]) -> str:
         started_at = time.monotonic()
         try:
-            result = await asyncio.to_thread(kb.search_for_agent, query, config=self.live_config)
+            # ── Fire filler phrase concurrently with KB query to kill silence ─
+            filler_text = self._next_filler()
+            kb_task = asyncio.create_task(
+                asyncio.to_thread(kb.search_for_agent, query, config=self.live_config)
+            )
+            if self._session_ref is not None:
+                try:
+                    self._session_ref.say(filler_text, add_to_chat_ctx=False)
+                except Exception:
+                    pass
+            result = await kb_task
             if not result or not result.get("grounding_text"):
                 return "I do not have confirmed knowledge base information for that yet."
             grounding_text = str(result.get("grounding_text") or "").strip()
@@ -793,6 +821,92 @@ class AgentTools(llm.ToolContext):
         except Exception as exc:
             logger.error("[TOOL] search_knowledge_base failed: %s", exc)
             return "I am having trouble checking the knowledge base right now."
+        finally:
+            self._record_tool_time(started_at)
+
+    @llm.function_tool(description=(
+        "Capture this caller as a lead when they are interested but NOT ready to book yet. "
+        "Use interest_level: 'hot' (ready soon, clear intent), 'warm' (interested, needs follow-up), "
+        "'cold' (just browsing, vague). Always capture at least the property interest and budget."
+    ))
+    async def capture_lead_interest(
+        self,
+        interest_level: Annotated[str, "hot | warm | cold"],
+        caller_name: Annotated[str, "Full name of the caller"] = "",
+        caller_phone: Annotated[str, "Phone number, or empty to reuse session number"] = "",
+        property_interest: Annotated[str, "Property or project the caller is interested in"] = "",
+        budget: Annotated[str, "Caller's stated budget range e.g. 50-80 lakhs"] = "",
+        location_pref: Annotated[str, "Preferred location or area"] = "",
+        unit_type: Annotated[str, "Preferred unit type e.g. 2BHK, villa, plot"] = "",
+        purpose: Annotated[str, "buying | renting | investment"] = "",
+        notes: Annotated[str, "Any other important details from the conversation"] = "",
+    ) -> str:
+        started_at = time.monotonic()
+        try:
+            effective_phone = self._effective_phone(caller_phone)
+            effective_name = self._effective_name(caller_name)
+            if not effective_phone:
+                return "I still need a callback number to save this lead."
+            result = await asyncio.to_thread(
+                db.capture_lead,
+                effective_phone,
+                caller_name=effective_name,
+                interest_level=interest_level,
+                property_interest=property_interest,
+                budget=budget,
+                location_pref=location_pref,
+                unit_type=unit_type,
+                purpose=purpose,
+                notes=notes,
+                call_room_id=self.room_name or "",
+            )
+            if result:
+                level_label = {"hot": "🔥 Hot", "warm": "Warm", "cold": "Cold"}.get(interest_level.lower(), interest_level)
+                logger.info("[TOOL] capture_lead_interest: %s lead saved for %s", level_label, effective_phone)
+                return f"Lead captured successfully as {level_label}. Our team will follow up soon."
+            return "I had trouble saving the lead. Please try again."
+        except Exception as exc:
+            logger.error("[TOOL] capture_lead_interest failed: %s", exc)
+            return "I am having trouble saving the lead right now."
+        finally:
+            self._record_tool_time(started_at)
+
+    @llm.function_tool(description=(
+        "Retrieve this caller's full call history — previous summaries, durations, and sentiments. "
+        "Call this when the caller references a previous call, says they called before, or asks about a past inquiry."
+    ))
+    async def get_caller_history(self) -> str:
+        started_at = time.monotonic()
+        try:
+            phone = self._effective_phone()
+            if not phone:
+                return "I do not have a phone number on file to look up call history."
+            # Fire filler concurrently
+            if self._session_ref is not None:
+                try:
+                    self._session_ref.say("Let me pull up your previous call history.", add_to_chat_ctx=False)
+                except Exception:
+                    pass
+            rows = await asyncio.to_thread(db.fetch_full_caller_history, phone, 5)
+            if not rows:
+                return "I could not find any previous calls for this number."
+            lines = []
+            for i, r in enumerate(rows):
+                date = str(r.get("created_at") or "")[:10]
+                duration = int(r.get("duration") or 0)
+                summary = str(r.get("summary") or "").strip()
+                sentiment = str(r.get("sentiment") or "").strip()
+                entry = f"Call {i + 1} on {date} ({duration}s"
+                if sentiment:
+                    entry += f", {sentiment}"
+                entry += ")"
+                if summary:
+                    entry += f": {summary[:150]}"
+                lines.append(entry)
+            return "Call history:\n" + "\n".join(lines)
+        except Exception as exc:
+            logger.error("[TOOL] get_caller_history failed: %s", exc)
+            return "I am having trouble fetching the call history right now."
         finally:
             self._record_tool_time(started_at)
 
@@ -868,7 +982,13 @@ class OutboundAssistant(Agent):
             + "give a brief warm goodbye and IMMEDIATELY call the end_call tool to disconnect the call. "
             + "Do NOT keep the call open after the work is done. "
             + "If the caller explicitly says goodbye or indicates they are done, say a one-sentence farewell and call end_call right away. "
-            + "Do not wait for the caller to hang up — always end the call proactively."
+            + "Do not wait for the caller to hang up — always end the call proactively.\n\n"
+            + "[LEAD CAPTURE PROTOCOL]\n"
+            + "If the caller is interested in a property but NOT ready to book a site visit right now, call capture_lead_interest before ending the call.\n"
+            + "Use interest_level='hot' if they want to visit or buy very soon, 'warm' if they need time, 'cold' if just browsing.\n"
+            + "Always capture: property_interest, budget, location_pref, unit_type, purpose, and any key notes.\n\n"
+            + "[CALLER HISTORY PROTOCOL]\n"
+            + "If the caller says they called before, mentions a previous inquiry, or asks about a past conversation, call get_caller_history immediately."
             + get_ist_time_context()
             + get_language_instruction(str(self._live_config.get('lang_preset') or 'multilingual'))
         )
@@ -1003,16 +1123,27 @@ async def entrypoint(ctx: JobContext) -> None:
         def _fetch_context() -> dict[str, str]:
             display_name = ""
             source = ""
-            rows = db.fetch_call_logs(limit=1, phone_number=normalized_phone)
+            # ── Fetch last 5 calls for rich history ─────────────────────────
+            rows = db.fetch_full_caller_history(normalized_phone, limit=5)
             history = ""
             if rows:
-                last = rows[0]
-                display_name = str(last.get("caller_name") or "").strip()
+                display_name = str(rows[0].get("caller_name") or "").strip()
                 source = "call_log" if display_name else ""
-                created_at = str(last.get("created_at") or "")[:10]
-                summary = str(last.get("summary") or "").strip()
-                if summary:
-                    history = f"\n\n[CALLER HISTORY: Last call {created_at}. Summary: {summary}]"
+                lines = []
+                for i, r in enumerate(rows):
+                    date = str(r.get("created_at") or "")[:10]
+                    duration = int(r.get("duration") or 0)
+                    summary = str(r.get("summary") or "").strip()
+                    sentiment = str(r.get("sentiment") or "").strip()
+                    label = "Last call" if i == 0 else f"Call {i + 1}"
+                    entry = f"{label} ({date}, {duration}s"
+                    if sentiment:
+                        entry += f", {sentiment}"
+                    entry += ")"
+                    if summary:
+                        entry += f": {summary[:120]}"
+                    lines.append(entry)
+                history = "\n\n[CALLER HISTORY]\n" + "\n".join(lines)
             return {
                 "history_suffix": history,
                 "display_name": display_name,
@@ -1020,7 +1151,7 @@ async def entrypoint(ctx: JobContext) -> None:
             }
 
         try:
-            context = await asyncio.wait_for(asyncio.to_thread(_fetch_context), timeout=0.25)
+            context = await asyncio.wait_for(asyncio.to_thread(_fetch_context), timeout=0.5)
             _caller_history_cache[normalized_phone] = (time.monotonic(), context)
             return context
         except Exception:
@@ -1177,6 +1308,7 @@ async def entrypoint(ctx: JobContext) -> None:
     )
 
     await session.start(room=ctx.room, agent=agent, room_input_options=room_input)
+    agent_tools._session_ref = session  # enables filler phrase injection from tools
     logger.info("[AGENT] Session live")
     
     # Publish webhook call.answered

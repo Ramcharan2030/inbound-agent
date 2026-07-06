@@ -661,3 +661,73 @@ def get_recent_call_count(phone: str, hours: int = 1) -> int:
     except Exception as exc:
         logger.error(f"Failed to fetch recent call count: {exc}")
         return 0
+
+
+def capture_lead(
+    phone_number: str,
+    *,
+    caller_name: str = "",
+    interest_level: str = "warm",
+    property_interest: str = "",
+    budget: str = "",
+    location_pref: str = "",
+    unit_type: str = "",
+    purpose: str = "",
+    notes: str = "",
+    call_room_id: str = "",
+) -> dict[str, Any] | None:
+    normalized = normalize_phone_number(phone_number)
+    if not normalized:
+        return None
+    supabase = get_supabase()
+    if not supabase:
+        return None
+    now = _utcnow_iso()
+    row = {
+        "phone_number": normalized,
+        "caller_name": caller_name.strip() or None,
+        "interest_level": interest_level.strip().lower() or "warm",
+        "property_interest": property_interest.strip() or None,
+        "budget": budget.strip() or None,
+        "location_pref": location_pref.strip() or None,
+        "unit_type": unit_type.strip() or None,
+        "purpose": purpose.strip().lower() or None,
+        "notes": notes.strip() or None,
+        "call_room_id": call_room_id.strip() or None,
+        "updated_at": now,
+    }
+    try:
+        # Upsert by phone_number so repeated calls update the existing lead record
+        res = supabase.table("leads").upsert(row, on_conflict="phone_number").execute()
+        rows = res.data or []
+        return rows[0] if rows else row
+    except Exception as exc:
+        if _is_schema_error(str(exc)):
+            logger.warning("leads table missing — run sql/supabase/migration_v10_leads.sql")
+            return None
+        logger.error(f"Failed to capture lead: {exc}")
+        return None
+
+
+def fetch_full_caller_history(phone: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Return the last `limit` call log rows for this number, ordered newest-first."""
+    normalized = normalize_phone_number(phone)
+    if not normalized:
+        return []
+    supabase = get_supabase()
+    if not supabase:
+        return []
+    try:
+        res = (
+            supabase.table("call_logs")
+            .select("created_at,duration,summary,caller_name,sentiment")
+            .eq("phone_number", normalized)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return res.data or []
+    except Exception as exc:
+        logger.error(f"Failed to fetch caller history: {exc}")
+        return []
+
