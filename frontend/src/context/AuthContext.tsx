@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User, Session, AuthError } from '@supabase/supabase-js';
-import { supabase } from '../utils/supabase';
+import { supabase, ALLOWED_EMAILS, ALLOWED_DOMAINS } from '../utils/supabase';
 
 interface AuthContextType {
   user: User | null;
@@ -13,16 +13,7 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// Parse environment configuration for allowed emails and domains
-const ALLOWED_EMAILS = (import.meta.env.VITE_ALLOWED_EMAILS || '')
-  .split(',')
-  .map((e: string) => e.trim().toLowerCase())
-  .filter(Boolean);
-
-const ALLOWED_DOMAINS = (import.meta.env.VITE_ALLOWED_EMAIL_DOMAINS || '')
-  .split(',')
-  .map((d: string) => d.trim().toLowerCase())
-  .filter(Boolean);
+// Allowed emails and domains are imported dynamically from utils/supabase
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);

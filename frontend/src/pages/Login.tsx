@@ -1,19 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Mail, Lock, ShieldCheck, Sparkles, AlertCircle, Loader2 } from 'lucide-react';
-import { supabase } from '../utils/supabase';
+import { supabase, ALLOWED_EMAILS, ALLOWED_DOMAINS } from '../utils/supabase';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 
-// Parse allowed configurations for client-side feedback
-const ALLOWED_EMAILS = (import.meta.env.VITE_ALLOWED_EMAILS || '')
-  .split(',')
-  .map((e: string) => e.trim().toLowerCase())
-  .filter(Boolean);
-
-const ALLOWED_DOMAINS = (import.meta.env.VITE_ALLOWED_EMAIL_DOMAINS || '')
-  .split(',')
-  .map((d: string) => d.trim().toLowerCase())
-  .filter(Boolean);
+// Allowed emails and domains are imported dynamically from utils/supabase
 
 export const Login: React.FC = () => {
   const { error: contextError, setError: setContextError } = useAuth();

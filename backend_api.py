@@ -118,7 +118,7 @@ app.add_middleware(
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
     # Exclude non-API routes, health checks, and options preflights
-    if not path.startswith("/api") or path == "/health" or request.method == "OPTIONS":
+    if not path.startswith("/api") or path in {"/health", "/api/auth/config"} or request.method == "OPTIONS":
         return await call_next(request)
 
     auth_header = request.headers.get("Authorization")
@@ -883,6 +883,17 @@ def health_check():
         "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "service": "spx-backend-api",
+    }
+
+
+@app.get("/api/auth/config")
+def get_auth_config():
+    # Return public supabase configuration keys from runtime environment variables
+    return {
+        "supabase_url": os.environ.get("SUPABASE_URL", "") or os.environ.get("VITE_SUPABASE_URL", ""),
+        "supabase_anon_key": os.environ.get("SUPABASE_KEY", "") or os.environ.get("VITE_SUPABASE_PUBLISHABLE_KEY", ""),
+        "allowed_emails": os.environ.get("ALLOWED_EMAILS", "") or os.environ.get("VITE_ALLOWED_EMAILS", ""),
+        "allowed_email_domains": os.environ.get("ALLOWED_EMAIL_DOMAINS", "") or os.environ.get("VITE_ALLOWED_EMAIL_DOMAINS", ""),
     }
 
 
