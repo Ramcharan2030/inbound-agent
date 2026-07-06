@@ -594,11 +594,18 @@ class AgentTools(llm.ToolContext):
         logger.info("[TOOL] transfer_call: Attempting transfer. Destination: %s, Identity: %s, Room: %s", 
                     destination, self._sip_identity, self.room_name)
 
-        if destination and self.sip_domain and "@" not in destination:
-            clean = destination.replace("tel:", "").replace("sip:", "")
-            destination = f"sip:{clean}@{self.sip_domain}"
-        if destination and not destination.startswith("sip:"):
-            destination = f"sip:{destination}"
+        is_phone = False
+        clean = destination.replace("tel:", "").replace("sip:", "").strip()
+        if re.match(r"^\+?[0-9\-\s]+$", clean):
+            is_phone = True
+
+        if is_phone:
+            destination = f"sip:{clean}"
+        else:
+            if destination and self.sip_domain and "@" not in destination:
+                destination = f"sip:{clean}@{self.sip_domain}"
+            if destination and not destination.startswith("sip:") and not destination.startswith("tel:"):
+                destination = f"sip:{destination}"
         
         try:
             if not destination:
@@ -1023,10 +1030,67 @@ async def entrypoint(ctx: JobContext) -> None:
                 logger.debug("[OUTBOUND] wait_for_participant skipped: %s", exc)
         except api.TwirpError as exc:
             logger.error("[OUTBOUND] SIP call failed: %s", exc)
+            
+            # Extract and parse SIP error status
+            error_message = str(exc)
+            sip_status = ""
+            try:
+                if hasattr(exc, "metadata") and exc.metadata:
+                    sip_status = exc.metadata.get("sip_status") or exc.metadata.get("sip_status_code") or ""
+            except Exception:
+                pass
+            
+            if not sip_status:
+                match = re.search(r"sip status:\s*(.+)", error_message, re.IGNORECASE)
+                if match:
+                    sip_status = match.group(1).strip()
+            
+            sip_status_lower = sip_status.lower()
+            if "busy" in sip_status_lower or "486" in sip_status_lower:
+                status_db = "busy"
+                summary_text = f"Outbound call failed: Busy ({sip_status})"
+            elif "timeout" in sip_status_lower or "408" in sip_status_lower or "no answer" in sip_status_lower:
+                status_db = "no-answer"
+                summary_text = "Outbound call failed: No Answer"
+            elif "decline" in sip_status_lower or "603" in sip_status_lower:
+                status_db = "declined"
+                summary_text = "Outbound call failed: Declined by user"
+            else:
+                status_db = "failed"
+                summary_text = f"Outbound call failed: {sip_status or error_message}"
+            
+            try:
+                # Log call failure status inSupabase active_calls and call_logs tables
+                await asyncio.to_thread(db.upsert_active_call, ctx.room.name, caller_phone, caller_name, status_db)
+                await asyncio.to_thread(
+                    db.save_call_log,
+                    phone=caller_phone,
+                    duration=0,
+                    transcript="",
+                    summary=summary_text,
+                    caller_name=caller_name,
+                    call_room_id=ctx.room.name,
+                )
+            except Exception as db_exc:
+                logger.error("[OUTBOUND] Failed to log call failure to database: %s", db_exc)
+                
             ctx.shutdown()
             return
         except Exception as exc:
             logger.error("[OUTBOUND] Could not create SIP participant: %s", exc)
+            try:
+                await asyncio.to_thread(db.upsert_active_call, ctx.room.name, caller_phone, caller_name, "failed")
+                await asyncio.to_thread(
+                    db.save_call_log,
+                    phone=caller_phone,
+                    duration=0,
+                    transcript="",
+                    summary=f"Outbound call failed: {exc}",
+                    caller_name=caller_name,
+                    call_room_id=ctx.room.name,
+                )
+            except Exception as db_exc:
+                logger.error("[OUTBOUND] Failed to log call failure to database: %s", db_exc)
             ctx.shutdown()
             return
 
