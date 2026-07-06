@@ -12,9 +12,11 @@ import {
   Menu,
   X,
   Zap,
+  LogOut,
 } from 'lucide-react';
 import { cn } from '../ui';
 import { ToastContainer } from '../ui';
+import { useAuth } from '../../context/AuthContext';
 
 // ─── Navigation Config ────────────────────────────────────────
 const NAV_ITEMS = [
@@ -104,51 +106,70 @@ export const Sidebar = ({
 }: {
   className?: string;
   onMobileClose?: () => void;
-}) => (
-  <aside
-    className={cn(
-      'flex flex-col h-full w-64 bg-[#0a0b0f] border-r border-[#1c1e27]',
-      className
-    )}
-  >
-    <SidebarLogo />
+}) => {
+  const { user, signOut } = useAuth();
 
-    <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
-      <p className="px-3 text-[10px] font-bold text-zinc-700 uppercase tracking-widest mb-3">
-        Navigation
-      </p>
-      {NAV_ITEMS.map((item) => (
-        <NavItem
-          key={item.to}
-          to={item.to}
-          icon={item.icon}
-          label={item.label}
-          onClick={onMobileClose}
-        />
-      ))}
-    </nav>
+  return (
+    <aside
+      className={cn(
+        'flex flex-col h-full w-64 bg-[#0a0b0f] border-r border-[#1c1e27]',
+        className
+      )}
+    >
+      <SidebarLogo />
 
-    {/* Bottom section */}
-    <div className="px-3 pb-4 space-y-0.5 border-t border-[#1c1e27] pt-4">
-      <p className="px-3 text-[10px] font-bold text-zinc-700 uppercase tracking-widest mb-3">
-        System
-      </p>
-      <NavItem to="/config" icon={Settings} label="Configuration" onClick={onMobileClose} />
-
-      {/* Status indicator */}
-      <div className="mt-3 mx-1 px-3 py-2.5 rounded-xl bg-[#0e0f14] border border-[#1c1e27]">
-        <div className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-          <span className="text-xs font-medium text-zinc-400">Agent Online</span>
-        </div>
-        <p className="text-[10px] text-zinc-700 mt-0.5 flex items-center gap-1">
-          <Zap size={9} className="text-amber-600" />
-          Gemini Live Active
+      <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
+        <p className="px-3 text-[10px] font-bold text-zinc-700 uppercase tracking-widest mb-3">
+          Navigation
         </p>
+        {NAV_ITEMS.map((item) => (
+          <NavItem
+            key={item.to}
+            to={item.to}
+            icon={item.icon}
+            label={item.label}
+            onClick={onMobileClose}
+          />
+        ))}
+      </nav>
+
+      {/* User profile section in sidebar for mobile/tablet */}
+      {user && (
+        <div className="px-4 py-3 mx-3 mb-2 rounded-xl bg-[#0e0f14] border border-[#1c1e27] lg:hidden flex items-center justify-between">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-6 h-6 rounded bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-[10px] font-bold text-blue-400 shrink-0">
+              {user.email ? user.email.slice(0, 2).toUpperCase() : 'U'}
+            </div>
+            <span className="text-xs text-zinc-400 truncate">{user.email}</span>
+          </div>
+          <button onClick={signOut} className="text-zinc-500 hover:text-red-400 p-1">
+            <LogOut size={14} />
+          </button>
+        </div>
+      )}
+
+      {/* Bottom section */}
+      <div className="px-3 pb-4 space-y-0.5 border-t border-[#1c1e27] pt-4">
+        <p className="px-3 text-[10px] font-bold text-zinc-700 uppercase tracking-widest mb-3">
+          System
+        </p>
+        <NavItem to="/config" icon={Settings} label="Configuration" onClick={onMobileClose} />
+
+        {/* Status indicator */}
+        <div className="mt-3 mx-1 px-3 py-2.5 rounded-xl bg-[#0e0f14] border border-[#1c1e27]">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+            <span className="text-xs font-medium text-zinc-400">Agent Online</span>
+          </div>
+          <p className="text-[10px] text-zinc-700 mt-0.5 flex items-center gap-1">
+            <Zap size={9} className="text-amber-600" />
+            Gemini Live Active
+          </p>
+        </div>
       </div>
-    </div>
-  </aside>
-);
+    </aside>
+  );
+};
 
 // ─── Header ───────────────────────────────────────────────────
 const PAGE_TITLES: Record<string, string> = {
@@ -165,6 +186,9 @@ const PAGE_TITLES: Record<string, string> = {
 export const Header = ({ onMenuClick }: { onMenuClick: () => void }) => {
   const { pathname } = useLocation();
   const pageTitle = PAGE_TITLES[pathname] || 'ASolutions';
+  const { user, signOut } = useAuth();
+  const userEmail = user?.email || '';
+  const initials = userEmail ? userEmail.slice(0, 2).toUpperCase() : 'U';
 
   return (
     <header className="h-14 border-b border-[#1c1e27] bg-[#08090c]/80 backdrop-blur-md sticky top-0 z-40 flex items-center justify-between px-4 md:px-6">
@@ -181,6 +205,27 @@ export const Header = ({ onMenuClick }: { onMenuClick: () => void }) => {
       </div>
 
       <div className="flex items-center gap-3">
+        {/* User profile dropdown/pill */}
+        {user && (
+          <div className="flex items-center gap-3 pr-3 border-r border-[#1c1e27] h-6">
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-md bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-[10px] font-bold text-blue-400">
+                {initials}
+              </div>
+              <span className="hidden sm:inline text-xs font-medium text-zinc-400 max-w-[150px] truncate">
+                {userEmail}
+              </span>
+            </div>
+            <button
+              onClick={signOut}
+              title="Sign Out"
+              className="p-1 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded transition-all"
+            >
+              <LogOut size={14} />
+            </button>
+          </div>
+        )}
+
         {/* Live status pill */}
         <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />

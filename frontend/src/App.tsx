@@ -1,6 +1,7 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { ToastProvider } from './context/ToastContext';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import { Layout } from './components/layout';
 import { Overview } from './pages/Overview';
 import { CallLogs } from './pages/CallLogs';
@@ -10,6 +11,7 @@ import { KnowledgeBase } from './pages/KnowledgeBase';
 import { Outbound } from './pages/Outbound';
 import { Configuration } from './pages/Configuration';
 import { DoctorSchedule } from './pages/DoctorSchedule';
+import { Login } from './pages/Login';
 
 // ─── Error Boundary ───────────────────────────────────────────
 class ErrorBoundary extends React.Component<
@@ -55,25 +57,51 @@ class ErrorBoundary extends React.Component<
   }
 }
 
+// ─── App Content ──────────────────────────────────────────────
+function AppContent() {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#08090c] flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-10 h-10 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin" />
+          <span className="text-zinc-500 text-xs font-semibold tracking-wider uppercase">Loading console...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Login />;
+  }
+
+  return (
+    <Router>
+      <Layout>
+        <Routes>
+          <Route path="/"             element={<Overview />} />
+          <Route path="/logs"         element={<CallLogs />} />
+          <Route path="/contacts"     element={<Contacts />} />
+          <Route path="/appointments" element={<Appointments />} />
+          <Route path="/schedule"     element={<DoctorSchedule />} />
+          <Route path="/kb"           element={<KnowledgeBase />} />
+          <Route path="/outbound"     element={<Outbound />} />
+          <Route path="/config"       element={<Configuration />} />
+        </Routes>
+      </Layout>
+    </Router>
+  );
+}
+
 // ─── App ──────────────────────────────────────────────────────
 function App() {
   return (
     <ErrorBoundary>
       <ToastProvider>
-        <Router>
-          <Layout>
-            <Routes>
-              <Route path="/"             element={<Overview />} />
-              <Route path="/logs"         element={<CallLogs />} />
-              <Route path="/contacts"     element={<Contacts />} />
-              <Route path="/appointments" element={<Appointments />} />
-              <Route path="/schedule"     element={<DoctorSchedule />} />
-              <Route path="/kb"           element={<KnowledgeBase />} />
-              <Route path="/outbound"     element={<Outbound />} />
-              <Route path="/config"       element={<Configuration />} />
-            </Routes>
-          </Layout>
-        </Router>
+        <AuthProvider>
+          <AppContent />
+        </AuthProvider>
       </ToastProvider>
     </ErrorBoundary>
   );

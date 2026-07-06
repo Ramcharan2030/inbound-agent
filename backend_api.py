@@ -32,6 +32,56 @@ from outbound_calls import dispatch_outbound_call
 
 load_dotenv()
 
+# --- Auth Middleware dependencies ---
+from db_backend import get_supabase
+
+# Read allowed emails/domains from environment
+ALLOWED_EMAILS = [
+    e.strip().lower()
+    for e in os.environ.get("ALLOWED_EMAILS", "").split(",")
+    if e.strip()
+]
+ALLOWED_EMAIL_DOMAINS = [
+    d.strip().lower()
+    for d in os.environ.get("ALLOWED_EMAIL_DOMAINS", "").split(",")
+    if d.strip()
+]
+
+def verify_supabase_token(token: str) -> dict | None:
+    supabase_client = get_supabase()
+    if not supabase_client:
+        logger.error("[Auth] Supabase client is not initialized.")
+        return None
+    try:
+        response = supabase_client.auth.get_user(token)
+        if response and response.user:
+            return {
+                "id": response.user.id,
+                "email": response.user.email,
+            }
+    except Exception as exc:
+        logger.warning(f"[Auth] Token verification failed: {exc}")
+    return None
+
+def is_backend_email_allowed(email: str | None) -> bool:
+    if not email:
+        return False
+    email_lower = email.lower()
+    
+    # If no whitelists are configured, allow any authenticated user
+    if not ALLOWED_EMAILS and not ALLOWED_EMAIL_DOMAINS:
+        return True
+        
+    if email_lower in ALLOWED_EMAILS:
+        return True
+        
+    domain = email_lower.split("@")[-1] if "@" in email_lower else ""
+    if domain and domain in ALLOWED_EMAIL_DOMAINS:
+        return True
+        
+    return False
+
+
 logging.basicConfig(level=logging.INFO)
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     try:
@@ -62,6 +112,43 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+    # Exclude non-API routes, health checks, and options preflights
+    if not path.startswith("/api") or path == "/health" or request.method == "OPTIONS":
+        return await call_next(request)
+
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        logger.warning(f"[Auth] Missing or invalid authorization header for {path}")
+        return JSONResponse(
+            {"status": "error", "message": "Authentication required. Please sign in."},
+            status_code=401,
+        )
+
+    token = auth_header.split(" ", 1)[1].strip()
+    user_info = verify_supabase_token(token)
+    if not user_info:
+        logger.warning(f"[Auth] Invalid or expired token for {path}")
+        return JSONResponse(
+            {"status": "error", "message": "Session expired or invalid. Please sign in again."},
+            status_code=401,
+        )
+
+    email = user_info.get("email")
+    if not is_backend_email_allowed(email):
+        logger.warning(f"[Auth] Access denied for unauthorized email: {email}")
+        return JSONResponse(
+            {"status": "error", "message": f"Access Denied: Email {email} is not authorized."},
+            status_code=403,
+        )
+
+    # Store user info on request state
+    request.state.user = user_info
+    return await call_next(request)
 
 
 @app.exception_handler(Exception)
