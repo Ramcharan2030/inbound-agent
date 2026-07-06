@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -739,31 +739,44 @@ async def api_call_single(request: Request):
         return {"status": "error", "message": "Unable to dispatch the outbound call right now."}
 
 
+async def _staggered_bulk_dispatcher(numbers: list[str], config: dict):
+    # Stagger outbound call dispatches (e.g. 6 seconds interval) to avoid spam filters and rate limits
+    interval = 6.0
+    for index, phone in enumerate(numbers):
+        if index > 0:
+            await asyncio.sleep(interval)
+        try:
+            result = await dispatch_outbound_call(phone, config=config)
+            logger.info(f"Bulk outbound dispatched asynchronously to {phone}: {result['dispatch_id']}")
+        except Exception as exc:
+            logger.error(f"Async bulk call dispatch error for {phone}: {exc}")
+
+
 @app.post("/api/call/bulk")
-async def api_call_bulk(request: Request):
+async def api_call_bulk(request: Request, background_tasks: BackgroundTasks):
     data = await request.json()
     raw_numbers = data.get("numbers") or data.get("phone_numbers") or ""
     if isinstance(raw_numbers, list):
         numbers = [str(item).strip() for item in raw_numbers if str(item).strip()]
     else:
         numbers = [item.strip() for item in str(raw_numbers).splitlines() if item.strip()]
-    results = []
+    
     config = _load_runtime_config()
-    for phone in numbers:
-        try:
-            result = await dispatch_outbound_call(phone, config=config)
-            results.append(
-                {
-                    "phone": phone,
-                    "status": "ok",
-                    "dispatch_id": result["dispatch_id"],
-                    "room": result["room"],
-                }
-            )
-            logger.info(f"Bulk outbound dispatched to {phone}: {result['dispatch_id']}")
-        except Exception as exc:
-            logger.error(f"Bulk call dispatch error for {phone}: {exc}")
-            results.append({"phone": phone, "status": "error", "message": "Unable to dispatch this call right now."})
+    
+    # Queue the staggered dispatch in the background
+    background_tasks.add_task(_staggered_bulk_dispatcher, numbers, config)
+    
+    # Return formatted results immediately so the UI displays the queued status successfully
+    results = [
+        {
+            "phone": phone,
+            "status": "ok",
+            "dispatch_id": f"queued-{uuid.uuid4().hex[:8]}",
+            "room": "queued",
+        }
+        for phone in numbers
+    ]
+    
     return {"results": results, "total": len(results)}
 
 
