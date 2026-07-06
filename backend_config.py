@@ -4,6 +4,28 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from dotenv import load_dotenv
+
+# Load local environment files if present
+load_dotenv()
+
+def _normalize_vite_env_vars():
+    # Map Vite environment variables to their standard Python backend equivalents
+    mappings = {
+        "LIVEKIT_URL": "VITE_LIVEKIT_URL",
+        "LIVEKIT_API_KEY": "VITE_LIVEKIT_API_KEY",
+        "LIVEKIT_API_SECRET": "VITE_LIVEKIT_API_SECRET",
+        "SIP_TRUNK_ID": "VITE_SIP_TRUNK_ID",
+        "SUPABASE_URL": "VITE_SUPABASE_URL",
+        "SUPABASE_KEY": "VITE_SUPABASE_PUBLISHABLE_KEY",
+        "ALLOWED_EMAILS": "VITE_ALLOWED_EMAILS",
+        "ALLOWED_EMAIL_DOMAINS": "VITE_ALLOWED_EMAIL_DOMAINS",
+    }
+    for standard_key, vite_key in mappings.items():
+        if not os.environ.get(standard_key) and os.environ.get(vite_key):
+            os.environ[standard_key] = os.environ[vite_key]
+
+_normalize_vite_env_vars()
 
 from runtime_env import ensure_primary_config_parent, get_config_read_paths
 
