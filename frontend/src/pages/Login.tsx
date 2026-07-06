@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Mail, Lock, ShieldCheck, Sparkles, AlertCircle, Loader2 } from 'lucide-react';
 import { supabase } from '../utils/supabase';
 import { useAuth } from '../context/AuthContext';
@@ -25,6 +25,12 @@ export const Login: React.FC = () => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!supabase) {
+      setLocalError('Configuration Error: VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY are missing. Please add them to your build environment variables (Build-time variables in Coolify).');
+    }
+  }, []);
 
   // Client-side quick check
   const validateEmailFormatAndAccess = (targetEmail: string): string | null => {
@@ -53,6 +59,11 @@ export const Login: React.FC = () => {
     e.preventDefault();
     setLocalError(null);
     setContextError(null);
+
+    if (!supabase) {
+      setLocalError('Configuration Error: Supabase client is not initialized. Please configure VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY in Coolify.');
+      return;
+    }
 
     // Validate email
     const emailError = validateEmailFormatAndAccess(email);

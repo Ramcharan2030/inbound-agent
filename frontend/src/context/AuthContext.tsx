@@ -59,7 +59,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const email = currentSession.user.email;
       if (!isEmailAllowed(email)) {
         setError(`Access Denied: ${email} is not authorized to access this console.`);
-        await supabase.auth.signOut();
+        if (supabase) {
+          await supabase.auth.signOut();
+        }
         setUser(null);
         setSession(null);
         localStorage.removeItem('auth_token');
@@ -80,6 +82,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   useEffect(() => {
+    if (!supabase) {
+      setError('Configuration Error: VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY environment variables are missing. Please add them to your build environment variables (Build-time variables in Coolify).');
+      setLoading(false);
+      return;
+    }
+
     // Check active session on mount
     supabase.auth.getSession().then(({ data: { session: initialSession } }) => {
       handleSession(initialSession);
@@ -99,6 +107,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const signOut = async () => {
+    if (!supabase) return;
     setLoading(true);
     try {
       await supabase.auth.signOut();
