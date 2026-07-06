@@ -168,8 +168,8 @@ def _normalize_appointment_payload(
 
 
 def get_supabase() -> Client | None:
-    url = os.environ.get("SUPABASE_URL", "")
-    key = os.environ.get("SUPABASE_KEY", "")
+    url = os.environ.get("SUPABASE_URL", "") or os.environ.get("VITE_SUPABASE_URL", "")
+    key = os.environ.get("SUPABASE_KEY", "") or os.environ.get("VITE_SUPABASE_PUBLISHABLE_KEY", "")
     if not url or not key:
         return None
 

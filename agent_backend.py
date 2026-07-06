@@ -1393,7 +1393,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 )
                 await stop_api.egress.stop_egress(api.StopEgressRequest(egress_id=egress_id))
                 await stop_api.aclose()
-                base_url = str(os.environ.get("SUPABASE_URL", "")).rstrip("/")
+                base_url = str(os.environ.get("SUPABASE_URL", "") or os.environ.get("VITE_SUPABASE_URL", "")).rstrip("/")
                 if base_url:
                     recording_url = (
                         f"{base_url}/storage/v1/object/public/call-recordings/recordings/{ctx.room.name}.ogg"
