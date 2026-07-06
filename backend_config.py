@@ -93,11 +93,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "gemini_live_vad_prefix_padding_ms": 300,
     "gemini_live_vad_start_sensitivity": "high",
     "gemini_live_vad_end_sensitivity": "high",
+    "webhook_url": "",
+    "max_concurrent_calls": 10,
+    "sentry_dsn": "",
 }
 
 ALLOWED_CONFIG_KEYS = tuple(DEFAULT_CONFIG.keys())
 
 ENV_KEY_MAP = {
+    "webhook_url": "WEBHOOK_URL",
+    "max_concurrent_calls": "MAX_CONCURRENT_CALLS",
+    "sentry_dsn": "SENTRY_DSN",
     "first_line": "FIRST_LINE",
     "agent_instructions": "AGENT_INSTRUCTIONS",
     "gemini_live_model": "GEMINI_LIVE_MODEL",

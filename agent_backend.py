@@ -44,6 +44,20 @@ logging.getLogger("livekit.plugins.google").addFilter(_SuppressKnownWarnings())
 load_dotenv()
 logger = logging.getLogger("backend-agent")
 
+# Initialize Sentry if configured
+_sentry_dsn = os.environ.get("SENTRY_DSN", "").strip()
+if _sentry_dsn:
+    try:
+        import sentry_sdk
+        sentry_sdk.init(
+            dsn=_sentry_dsn,
+            traces_sample_rate=1.0,
+            profiles_sample_rate=1.0,
+        )
+        logger.info("[SENTRY] SDK initialized successfully.")
+    except Exception as e:
+        logger.warning("[SENTRY] Failed to initialize: %s", e)
+
 # ── Observability: log to console AND persistent file ──────────────────────
 _LOG_DIR = Path(__file__).resolve().parent / "logs"
 _LOG_DIR.mkdir(exist_ok=True)
@@ -931,11 +945,45 @@ async def entrypoint(ctx: JobContext) -> None:
     is_outbound_call = bool(phone_number and job_meta)
     caller_phone = db.normalize_phone_number(phone_number) or phone_number
 
+    # 1. DNC (Do Not Call) Registry Check
+    if caller_phone != "unknown":
+        try:
+            if await asyncio.to_thread(db.is_number_in_dnc, caller_phone):
+                logger.warning("[DNC] Call blocked. Number is in Do-Not-Call registry: %s", caller_phone)
+                ctx.shutdown()
+                return
+        except Exception as e:
+            logger.error("[DNC] Error checking registry: %s", e)
+
+    # 2. Persistent Database-Backed Rate Limiting (max 5 calls per hour per number, cluster-safe)
+    if caller_phone != "unknown" and caller_phone != "Web-Sandbox-Test":
+        try:
+            recent_calls = await asyncio.to_thread(db.get_recent_call_count, caller_phone, hours=1)
+            if recent_calls >= 5:
+                logger.warning("[RATE-LIMIT] Call blocked. Number %s has exceeded 5 calls in the last hour.", caller_phone)
+                ctx.shutdown()
+                return
+        except Exception as e:
+            logger.error("[RATE-LIMIT] Error checking persistent rate limits: %s", e)
+
     if is_rate_limited(caller_phone):
         logger.warning("[RATE-LIMIT] Blocked %s", caller_phone)
         return
 
     live_config = get_live_config(caller_phone if caller_phone != "unknown" else None)
+    
+    # Publish webhook call.started
+    try:
+        import notify
+        await asyncio.to_thread(
+            notify.notify_call_started,
+            caller_phone=caller_phone,
+            caller_name=caller_name,
+            call_room_id=ctx.room.name,
+            config=live_config
+        )
+    except Exception as e:
+        logger.error("[WEBHOOK] Failed to publish call.started: %s", e)
     if not await preflight_gemini_live_connection(live_config):
         logger.error("[VOICE] Gemini Live preflight failed and no fallback runtime is available")
         ctx.shutdown()
@@ -1130,6 +1178,20 @@ async def entrypoint(ctx: JobContext) -> None:
 
     await session.start(room=ctx.room, agent=agent, room_input_options=room_input)
     logger.info("[AGENT] Session live")
+    
+    # Publish webhook call.answered
+    try:
+        import notify
+        await asyncio.to_thread(
+            notify.notify_call_answered,
+            caller_phone=caller_phone,
+            caller_name=caller_name,
+            call_room_id=ctx.room.name,
+            config=live_config
+        )
+    except Exception as e:
+        logger.error("[WEBHOOK] Failed to publish call.answered: %s", e)
+        
     call_start_time = datetime.now(timezone.utc)
 
     wrapup_instructions = (
@@ -1328,14 +1390,60 @@ async def entrypoint(ctx: JobContext) -> None:
             )
             asyncio.create_task(_flush_active_turn_metric())
 
+    first_speech_start = None
+    amd_classified = False
+
+    async def _handle_voicemail_shutdown() -> None:
+        try:
+            await asyncio.to_thread(db.upsert_active_call, ctx.room.name, caller_phone, caller_name, "voicemail")
+            await asyncio.to_thread(
+                db.save_call_log,
+                phone=caller_phone,
+                duration=0,
+                transcript="",
+                summary="Call hung up: Voicemail / Answering Machine detected.",
+                caller_name=caller_name,
+                call_room_id=ctx.room.name,
+            )
+            # Send Webhook
+            from notify import send_webhook
+            send_webhook("call.completed", {
+                "phone_number": caller_phone,
+                "caller_name": caller_name,
+                "duration_seconds": 0,
+                "call_summary": "Voicemail / Answering Machine detected.",
+                "status": "voicemail"
+            }, config=live_config)
+        except Exception as e:
+            logger.error("[AMD] Error logging voicemail: %s", e)
+        ctx.shutdown()
+
     @session.on("user_state_changed")
     def _on_user_state_changed(ev) -> None:
-        if getattr(ev, "new_state", None) != "speaking":
-            return
-        active_turn = runtime_state.get("active_turn")
-        if active_turn:
-            return
-        runtime_state["active_turn"] = _make_active_turn(time.monotonic())
+        nonlocal first_speech_start, amd_classified
+        new_state = getattr(ev, "new_state", None)
+        
+        if new_state == "speaking":
+            if first_speech_start is None and not amd_classified:
+                first_speech_start = time.monotonic()
+                logger.info("[AMD] First speech segment started...")
+                
+            active_turn = runtime_state.get("active_turn")
+            if active_turn:
+                return
+            runtime_state["active_turn"] = _make_active_turn(time.monotonic())
+            
+        elif first_speech_start is not None and not amd_classified:
+            # Speech ended
+            duration = time.monotonic() - first_speech_start
+            first_speech_start = None
+            amd_classified = True
+            logger.info("[AMD] First speech duration: %.2fs", duration)
+            
+            # Answering machines/voicemail greetings are long continuous segments of speech (> 4.2s)
+            if duration > 4.2:
+                logger.warning("[AMD] Voicemail detected! Hanging up call to save resources.")
+                asyncio.create_task(_handle_voicemail_shutdown())
 
     @session.on("user_input_transcribed")
     def _on_user_input_transcribed(ev) -> None:

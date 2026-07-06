@@ -424,6 +424,23 @@ def upsert_active_call(room_id: str, phone: str, caller_name: str, status: str) 
         return None
 
 
+def count_active_calls() -> int:
+    supabase = get_supabase()
+    if not supabase:
+        return 0
+    try:
+        res1 = supabase.table("active_calls").select("room_id", count="exact").eq("status", "ringing").execute()
+        res2 = supabase.table("active_calls").select("room_id", count="exact").eq("status", "active").execute()
+        count1 = getattr(res1, "count", 0) or len(res1.data or [])
+        count2 = getattr(res2, "count", 0) or len(res2.data or [])
+        return count1 + count2
+    except Exception as exc:
+        if _is_schema_error(str(exc)):
+            return 0
+        logger.error(f"Failed to count active calls: {exc}")
+        return 0
+
+
 def fetch_appointments(
     *,
     start_iso: str | None = None,
@@ -610,3 +627,37 @@ def list_call_turn_metrics(
             return []
         logger.error(f"Failed to fetch call turn metrics: {exc}")
         return []
+
+
+def is_number_in_dnc(phone: str) -> bool:
+    normalized = normalize_phone_number(phone)
+    if not normalized:
+        return False
+    supabase = get_supabase()
+    if not supabase:
+        return False
+    try:
+        res = supabase.table("do_not_call").select("phone_number").eq("phone_number", normalized).execute()
+        return bool(res.data)
+    except Exception as exc:
+        if _is_schema_error(str(exc)):
+            logger.warning("do_not_call table is missing in Supabase. Run migration or returning False.")
+            return False
+        logger.error(f"Failed to check DNC registry: {exc}")
+        return False
+
+
+def get_recent_call_count(phone: str, hours: int = 1) -> int:
+    normalized = normalize_phone_number(phone)
+    if not normalized:
+        return 0
+    supabase = get_supabase()
+    if not supabase:
+        return 0
+    try:
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        res = supabase.table("call_logs").select("id").eq("phone_number", normalized).gte("created_at", since).execute()
+        return len(res.data or [])
+    except Exception as exc:
+        logger.error(f"Failed to fetch recent call count: {exc}")
+        return 0

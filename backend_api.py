@@ -96,6 +96,20 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
 
 logger = logging.getLogger("backend-api")
 
+# Initialize Sentry if configured
+_sentry_dsn = os.environ.get("SENTRY_DSN", "").strip()
+if _sentry_dsn:
+    try:
+        import sentry_sdk
+        sentry_sdk.init(
+            dsn=_sentry_dsn,
+            traces_sample_rate=1.0,
+            profiles_sample_rate=1.0,
+        )
+        logger.info("[SENTRY] SDK initialized successfully.")
+    except Exception as e:
+        logger.warning("[SENTRY] Failed to initialize: %s", e)
+
 MAX_KB_UPLOAD_BYTES = 25 * 1024 * 1024
 FRONTEND_DIST_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
 
@@ -726,6 +740,20 @@ async def api_call_single(request: Request):
     data = await request.json()
     phone = str(data.get("phone") or data.get("phone_number") or "").strip()
     config = _load_runtime_config()
+    
+    # Concurrency limit check
+    try:
+        import db_backend
+        max_calls = int(config.get("max_concurrent_calls") or os.environ.get("MAX_CONCURRENT_CALLS", 10))
+        active_count = await asyncio.to_thread(db_backend.count_active_calls)
+        if active_count >= max_calls:
+            return JSONResponse(
+                status_code=429,
+                content={"status": "error", "message": f"Server concurrent call limit reached ({max_calls}). Please try again later."}
+            )
+    except Exception as exc:
+        logger.error(f"Concurrency check failed: {exc}")
+
     try:
         result = await dispatch_outbound_call(
             phone,
@@ -741,10 +769,26 @@ async def api_call_single(request: Request):
 
 async def _staggered_bulk_dispatcher(numbers: list[str], config: dict):
     # Stagger outbound call dispatches (e.g. 6 seconds interval) to avoid spam filters and rate limits
+    import db_backend
+    max_calls = int(config.get("max_concurrent_calls") or os.environ.get("MAX_CONCURRENT_CALLS", 10))
     interval = 6.0
+    
     for index, phone in enumerate(numbers):
         if index > 0:
             await asyncio.sleep(interval)
+            
+        # Throttling queue loop
+        while True:
+            try:
+                active_count = await asyncio.to_thread(db_backend.count_active_calls)
+                if active_count < max_calls:
+                    break
+                logger.info(f"[THROTTLE] Concurrency limit reached ({active_count}/{max_calls}). Queuing call to {phone}...")
+            except Exception as e:
+                logger.error(f"Error checking concurrency in queue loop: {e}")
+                break
+            await asyncio.sleep(5.0)
+            
         try:
             result = await dispatch_outbound_call(phone, config=config)
             logger.info(f"Bulk outbound dispatched asynchronously to {phone}: {result['dispatch_id']}")

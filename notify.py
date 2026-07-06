@@ -1,7 +1,6 @@
 import logging
 import os
-from datetime import datetime
-
+from datetime import datetime, timezone
 import requests
 
 logger = logging.getLogger("notify")
@@ -49,6 +48,56 @@ def send_telegram(message: str, *, config: dict | None = None) -> bool:
         return False
 
 
+def send_webhook(event_type: str, payload: dict, *, config: dict | None = None) -> bool:
+    webhook_url = str(_env_or_config(config, "webhook_url", "WEBHOOK_URL", "")).strip()
+    if not webhook_url:
+        return False
+    try:
+        data = {
+            "event": event_type,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data": payload
+        }
+        response = requests.post(webhook_url, json=data, timeout=5)
+        response.raise_for_status()
+        return True
+    except Exception as exc:
+        logger.error("[WEBHOOK] Failed: %s", exc)
+        return False
+
+
+def notify_call_started(
+    caller_phone: str,
+    caller_name: str = "",
+    call_room_id: str = "",
+    *,
+    config: dict | None = None,
+) -> bool:
+    payload = {
+        "phone_number": caller_phone,
+        "caller_name": caller_name,
+        "call_room_id": call_room_id,
+        "status": "ringing"
+    }
+    return send_webhook("call.started", payload, config=config)
+
+
+def notify_call_answered(
+    caller_phone: str,
+    caller_name: str = "",
+    call_room_id: str = "",
+    *,
+    config: dict | None = None,
+) -> bool:
+    payload = {
+        "phone_number": caller_phone,
+        "caller_name": caller_name,
+        "call_room_id": call_room_id,
+        "status": "active"
+    }
+    return send_webhook("call.answered", payload, config=config)
+
+
 def notify_booking_confirmed(
     caller_name: str,
     caller_phone: str,
@@ -76,6 +125,20 @@ def notify_booking_confirmed(
         f"Voice: {tts_voice or '-'}\n"
         + (f"\nAI Summary:\n_{ai_summary}_" if ai_summary else "")
     )
+    
+    # Send Webhook
+    webhook_payload = {
+        "phone_number": caller_phone,
+        "caller_name": caller_name,
+        "booking_id": booking_id,
+        "booking_time": booking_time_iso,
+        "notes": notes,
+        "tts_voice": tts_voice,
+        "ai_summary": ai_summary,
+        "status": "booked"
+    }
+    send_webhook("booking.confirmed", webhook_payload, config=config)
+
     return send_telegram(message, config=config)
 
 
@@ -94,6 +157,17 @@ def notify_booking_cancelled(
         f"Booking ID: `{booking_id}`\n"
         f"Reason: {reason or 'Cancelled'}"
     )
+
+    # Send Webhook
+    webhook_payload = {
+        "phone_number": caller_phone,
+        "caller_name": caller_name,
+        "booking_id": booking_id,
+        "reason": reason,
+        "status": "cancelled"
+    }
+    send_webhook("booking.cancelled", webhook_payload, config=config)
+
     return send_telegram(message, config=config)
 
 
@@ -115,13 +189,40 @@ def notify_call_no_booking(
         f"Voice: {tts_voice or '-'}\n"
         f"Summary: _{ai_summary or call_summary or 'Caller did not schedule.'}_"
     )
+
+    # Send Webhook
+    webhook_payload = {
+        "phone_number": caller_phone,
+        "caller_name": caller_name,
+        "duration_seconds": duration_seconds,
+        "call_summary": call_summary,
+        "ai_summary": ai_summary,
+        "tts_voice": tts_voice,
+        "status": "completed"
+    }
+    send_webhook("call.completed", webhook_payload, config=config)
+
     return send_telegram(message, config=config)
 
 
-def notify_agent_error(caller_phone: str, error: str, *, config: dict | None = None) -> bool:
+def notify_agent_error(
+    caller_phone: str,
+    error: str,
+    *,
+    config: dict | None = None,
+) -> bool:
     message = (
         f"*Agent Error During Call*\n"
         f"Phone: `{caller_phone}`\n"
         f"Error: `{error}`"
     )
+
+    # Send Webhook
+    webhook_payload = {
+        "phone_number": caller_phone,
+        "error": error,
+        "status": "failed"
+    }
+    send_webhook("call.failed", webhook_payload, config=config)
+
     return send_telegram(message, config=config)
