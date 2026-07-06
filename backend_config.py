@@ -199,14 +199,14 @@ def _config_layers(phone_number: str | None = None) -> list[dict[str, Any]]:
 def _normalize_config(values: dict[str, Any] | None) -> dict[str, Any]:
     raw = dict(DEFAULT_CONFIG)
     for key in ALLOWED_CONFIG_KEYS:
-        if values and key in values:
+        # Prioritize environment variables over JSON file contents
+        env_key = ENV_KEY_MAP.get(key)
+        env_value = os.getenv(env_key, "") if env_key else ""
+        
+        if env_value not in (None, ""):
+            raw[key] = env_value
+        elif values and key in values and values[key] not in (None, ""):
             raw[key] = values[key]
-        else:
-            env_key = ENV_KEY_MAP.get(key)
-            if env_key:
-                env_value = os.getenv(env_key, "")
-                if env_value not in (None, ""):
-                    raw[key] = env_value
 
     normalized = {
         "first_line": str(raw.get("first_line") or DEFAULT_CONFIG["first_line"]).strip() or DEFAULT_CONFIG["first_line"],
