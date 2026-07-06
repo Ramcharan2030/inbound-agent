@@ -8,7 +8,18 @@ import type { CallLog } from '../api/types';
 
 const OutcomeBadge = ({ log }: { log: CallLog }) => {
   if (log.was_booked) return <Badge variant="success">Booked</Badge>;
-  if (log.sentiment === 'negative') return <Badge variant="danger">Negative</Badge>;
+  
+  const s = String(log.sentiment || '').toLowerCase();
+  if (s === 'interested') return <Badge variant="success">Interested</Badge>;
+  if (s === 'not_interested' || s === 'negative') return <Badge variant="danger">Not Interested</Badge>;
+  if (s === 'busy') return <Badge variant="danger">Busy</Badge>;
+  if (s === 'no-answer' || s === 'not_lifted') return <Badge variant="warning">No Answer</Badge>;
+  if (s === 'declined') return <Badge variant="danger">Declined</Badge>;
+  if (s === 'failed') return <Badge variant="danger">Failed</Badge>;
+  if (s === 'neutral') return <Badge variant="default">Neutral</Badge>;
+  
+  if (log.duration_seconds === 0) return <Badge variant="warning">No Answer</Badge>;
+  
   return <Badge variant="default">Completed</Badge>;
 };
 

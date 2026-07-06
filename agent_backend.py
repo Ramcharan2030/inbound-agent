@@ -1468,6 +1468,51 @@ async def entrypoint(ctx: JobContext) -> None:
         final_phone = agent_tools._effective_phone()
         final_name = agent_tools._effective_name()
         await asyncio.to_thread(db.upsert_active_call, ctx.room.name, final_phone, final_name, "completed")
+        # Determine sentiment / caller interest level dynamically using Gemini (with keyword fallback)
+        sentiment_label = "neutral"
+        if booking_was_confirmed:
+            sentiment_label = "interested"
+        elif not transcript_text.strip():
+            sentiment_label = "not_lifted"
+        else:
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=os.environ.get("GOOGLE_API_KEY", ""))
+                model = genai.GenerativeModel("gemini-1.5-flash")
+                prompt = (
+                    "Analyze this phone call transcript and classify the caller's interest in the product/service "
+                    "into exactly one of these labels: 'interested', 'not_interested', or 'neutral'.\n\n"
+                    f"Transcript:\n{transcript_text}\n\n"
+                    "Respond with only the label itself."
+                )
+                response = await asyncio.to_thread(model.generate_content, prompt)
+                result = str(response.text).strip().lower()
+                if "not_interested" in result or "not interested" in result:
+                    sentiment_label = "not_interested"
+                elif "interested" in result:
+                    sentiment_label = "interested"
+                else:
+                    sentiment_label = "neutral"
+            except Exception as e:
+                logger.warning("[AGENT] Failed to analyze call sentiment with Gemini: %s", e)
+                # Rule-based fallback
+                lowered_transcript = transcript_text.lower()
+                interested_keywords = [
+                    "interested", "yes", "book", "visit", "buy", "details", "contact", 
+                    "location", "price", "site", "meeting", "appointment", "schedule",
+                    "chala", "bagundi", "kavalali", "interest", "sare", "ok"
+                ]
+                not_interested_keywords = [
+                    "not interested", "wrong number", "don't call", "no", "busy", 
+                    "hang up", "stop", "cancel", "vaddu", "interesam ledu"
+                ]
+                int_score = sum(lowered_transcript.count(kw) for kw in interested_keywords)
+                not_int_score = sum(lowered_transcript.count(kw) for kw in not_interested_keywords)
+                if int_score > not_int_score:
+                    sentiment_label = "interested"
+                elif not_int_score > int_score:
+                    sentiment_label = "not_interested"
+
         await asyncio.to_thread(
             db.save_call_log,
             final_phone,
@@ -1476,7 +1521,7 @@ async def entrypoint(ctx: JobContext) -> None:
             booking_status_msg,
             recording_url,
             final_name,
-            "unknown",
+            sentiment_label,
             estimated_cost,
             call_dt.date().isoformat(),
             call_dt.hour,
