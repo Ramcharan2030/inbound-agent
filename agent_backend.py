@@ -1726,7 +1726,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 )
                 response = await asyncio.to_thread(
                     client.models.generate_content,
-                    model="gemini-1.5-flash",
+                    model="gemini-2.5-flash",
                     contents=prompt
                 )
                 result = str(response.text).strip().lower()
