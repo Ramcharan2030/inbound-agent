@@ -125,7 +125,15 @@ def stream_output(name: str, process: subprocess.Popen[str]) -> None:
     for line in process.stdout:
         text = line.rstrip()
         if text:
-            print(f"[{name}] {text}", flush=True)
+            try:
+                print(f"[{name}] {text}", flush=True)
+            except UnicodeEncodeError:
+                try:
+                    encoding = sys.stdout.encoding or 'ascii'
+                    clean_text = text.encode(encoding, errors='replace').decode(encoding, errors='replace')
+                    print(f"[{name}] {clean_text}", flush=True)
+                except Exception:
+                    pass
 
 
 def stop_process(name: str, process: subprocess.Popen[str]) -> None:
