@@ -720,7 +720,7 @@ def fetch_full_caller_history(phone: str, limit: int = 5) -> list[dict[str, Any]
     try:
         res = (
             supabase.table("call_logs")
-            .select("created_at,duration,summary,caller_name,sentiment")
+            .select("created_at,duration_seconds,summary,caller_name,sentiment")
             .eq("phone_number", normalized)
             .order("created_at", desc=True)
             .limit(limit)

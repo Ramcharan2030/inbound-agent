@@ -893,7 +893,7 @@ class AgentTools(llm.ToolContext):
             lines = []
             for i, r in enumerate(rows):
                 date = str(r.get("created_at") or "")[:10]
-                duration = int(r.get("duration") or 0)
+                duration = int(r.get("duration_seconds") or r.get("duration") or 0)
                 summary = str(r.get("summary") or "").strip()
                 sentiment = str(r.get("sentiment") or "").strip()
                 entry = f"Call {i + 1} on {date} ({duration}s"
@@ -1132,7 +1132,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 lines = []
                 for i, r in enumerate(rows):
                     date = str(r.get("created_at") or "")[:10]
-                    duration = int(r.get("duration") or 0)
+                    duration = int(r.get("duration_seconds") or r.get("duration") or 0)
                     summary = str(r.get("summary") or "").strip()
                     sentiment = str(r.get("sentiment") or "").strip()
                     label = "Last call" if i == 0 else f"Call {i + 1}"
@@ -1716,16 +1716,19 @@ async def entrypoint(ctx: JobContext) -> None:
             sentiment_label = "not_lifted"
         else:
             try:
-                import google.generativeai as genai
-                genai.configure(api_key=os.environ.get("GOOGLE_API_KEY", ""))
-                model = genai.GenerativeModel("gemini-1.5-flash")
+                from google import genai
+                client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY", ""))
                 prompt = (
                     "Analyze this phone call transcript and classify the caller's interest in the product/service "
                     "into exactly one of these labels: 'interested', 'not_interested', or 'neutral'.\n\n"
                     f"Transcript:\n{transcript_text}\n\n"
                     "Respond with only the label itself."
                 )
-                response = await asyncio.to_thread(model.generate_content, prompt)
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model="gemini-1.5-flash",
+                    contents=prompt
+                )
                 result = str(response.text).strip().lower()
                 if "not_interested" in result or "not interested" in result:
                     sentiment_label = "not_interested"
