@@ -1740,7 +1740,15 @@ async def entrypoint(ctx: JobContext) -> None:
 
         final_phone = agent_tools._effective_phone()
         final_name = agent_tools._effective_name()
-        await asyncio.to_thread(db.upsert_active_call, ctx.room.name, final_phone, final_name, "completed")
+        
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(db.upsert_active_call, ctx.room.name, final_phone, final_name, "completed"),
+                timeout=5.0
+            )
+        except Exception as exc:
+            logger.warning("[SHUTDOWN] upsert_active_call failed or timed out: %s", exc)
+
         # Determine sentiment / caller interest level dynamically using Gemini (with keyword fallback)
         sentiment_label = "neutral"
         if booking_was_confirmed:
@@ -1757,10 +1765,13 @@ async def entrypoint(ctx: JobContext) -> None:
                     f"Transcript:\n{transcript_text}\n\n"
                     "Respond with only the label itself."
                 )
-                response = await asyncio.to_thread(
-                    client.models.generate_content,
-                    model="gemini-2.5-flash",
-                    contents=prompt
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        client.models.generate_content,
+                        model="gemini-2.5-flash",
+                        contents=prompt
+                    ),
+                    timeout=6.0
                 )
                 result = str(response.text).strip().lower()
                 if "not_interested" in result or "not interested" in result:
@@ -1789,27 +1800,33 @@ async def entrypoint(ctx: JobContext) -> None:
                 elif not_int_score > int_score:
                     sentiment_label = "not_interested"
 
-        await asyncio.to_thread(
-            db.save_call_log,
-            final_phone,
-            duration,
-            transcript_text,
-            booking_status_msg,
-            recording_url,
-            final_name,
-            sentiment_label,
-            estimated_cost,
-            call_dt.date().isoformat(),
-            call_dt.hour,
-            call_dt.strftime("%A"),
-            booking_was_confirmed,
-            interrupt_count,
-            ctx.room.name,
-            cost_vobiz_inr=cost_vobiz_inr,
-            cost_livekit_inr=cost_livekit_inr,
-            cost_gemini_inr=cost_gemini_inr,
-            cost_total_inr=cost_total_inr,
-        )
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    db.save_call_log,
+                    final_phone,
+                    duration,
+                    transcript_text,
+                    booking_status_msg,
+                    recording_url,
+                    final_name,
+                    sentiment_label,
+                    estimated_cost,
+                    call_dt.date().isoformat(),
+                    call_dt.hour,
+                    call_dt.strftime("%A"),
+                    booking_was_confirmed,
+                    interrupt_count,
+                    ctx.room.name,
+                    cost_vobiz_inr=cost_vobiz_inr,
+                    cost_livekit_inr=cost_livekit_inr,
+                    cost_gemini_inr=cost_gemini_inr,
+                    cost_total_inr=cost_total_inr,
+                ),
+                timeout=5.0
+            )
+        except Exception as exc:
+            logger.warning("[SHUTDOWN] save_call_log failed or timed out: %s", exc)
 
     ctx.add_shutdown_callback(unified_shutdown_hook)
 
