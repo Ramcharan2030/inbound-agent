@@ -1523,6 +1523,7 @@ async def entrypoint(ctx: JobContext) -> None:
             asyncio.create_task(_flush_active_turn_metric())
 
     first_speech_start = None
+    first_speech_duration = 0.0
     amd_classified = False
 
     async def _handle_voicemail_shutdown() -> None:
@@ -1552,7 +1553,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
     @session.on("user_state_changed")
     def _on_user_state_changed(ev) -> None:
-        nonlocal first_speech_start, amd_classified
+        nonlocal first_speech_start, amd_classified, first_speech_duration
         new_state = getattr(ev, "new_state", None)
         
         if new_state == "speaking":
@@ -1569,22 +1570,54 @@ async def entrypoint(ctx: JobContext) -> None:
             # Speech ended
             duration = time.monotonic() - first_speech_start
             first_speech_start = None
-            amd_classified = True
+            first_speech_duration = duration
             logger.info("[AMD] First speech duration: %.2fs", duration)
             
-            # Answering machines/voicemail greetings are long continuous segments of speech (> 4.2s)
-            if duration > 4.2:
-                logger.warning("[AMD] Voicemail detected! Hanging up call to save resources.")
-                asyncio.create_task(_handle_voicemail_shutdown())
+            # If the first segment is short (< 4.2s), we verify them as human immediately
+            if duration < 4.2:
+                amd_classified = True
+                logger.info("[AMD] Human verified (short first greeting duration: %.2fs)", duration)
 
     @session.on("user_input_transcribed")
     def _on_user_input_transcribed(ev) -> None:
+        nonlocal amd_classified
         if not getattr(ev, "is_final", False):
             return
         transcript = getattr(ev, "transcript", "")
         if transcript:
             logger.info("🎤 [STT ] Transcribed (final): %s", transcript)
         _record_user_turn(transcript)
+
+        # Run transcription-based AMD verification if duration is long but not yet classified
+        if not amd_classified and first_speech_duration > 0.0:
+            amd_classified = True
+            clean_text = str(transcript or "").strip().lower()
+            logger.info("[AMD] Analyzing first segment transcript for voicemail: '%s' (Duration: %.2fs)", clean_text, first_speech_duration)
+            
+            is_voicemail = False
+            if first_speech_duration > 4.2:
+                # Common human greetings
+                greetings = ["hello", "hi", "yes", "namaste", "halo", "namaskar", "please", "sir", "mam", "madam", "avunu", "cheppandi"]
+                has_greeting = any(g in clean_text for g in greetings)
+                
+                # Explicit voicemail keywords
+                voicemail_keywords = ["leave a message", "not available", "after the beep", "after the tone", "record your", "voicemail", "message after"]
+                has_voicemail_keywords = any(kw in clean_text for kw in voicemail_keywords)
+                
+                if has_voicemail_keywords:
+                    is_voicemail = True
+                elif not has_greeting and len(clean_text.split()) >= 5:
+                    # Long continuous segment with no human greeting is likely a machine
+                    is_voicemail = True
+                elif first_speech_duration > 8.5:
+                    # Incredibly long first segment (> 8.5s)
+                    is_voicemail = True
+            
+            if is_voicemail:
+                logger.warning("[AMD] Voicemail detected! Hanging up call to save resources.")
+                asyncio.create_task(_handle_voicemail_shutdown())
+            else:
+                logger.info("[AMD] Human verified successfully.")
 
     @session.on("agent_state_changed")
     def _on_agent_state_changed(ev) -> None:
