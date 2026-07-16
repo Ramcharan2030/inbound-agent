@@ -231,10 +231,10 @@ def _normalize_config(values: dict[str, Any] | None) -> dict[str, Any]:
         env_key = ENV_KEY_MAP.get(key)
         env_value = os.getenv(env_key, "") if env_key else ""
         
-        if env_value not in (None, ""):
-            raw[key] = env_value
-        elif values and key in values and values[key] not in (None, ""):
+        if values and key in values and values[key] not in (None, ""):
             raw[key] = values[key]
+        elif env_value not in (None, ""):
+            raw[key] = env_value
 
     normalized = {
         "first_line": str(raw.get("first_line") or DEFAULT_CONFIG["first_line"]).strip() or DEFAULT_CONFIG["first_line"],

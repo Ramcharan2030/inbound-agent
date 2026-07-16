@@ -243,6 +243,25 @@ def get_live_config(phone_number: str | None = None) -> dict:
     return config
 
 
+def cleanup_resources(live_config: dict) -> None:
+    # Cancel any pending prefetch tasks
+    tasks = live_config.get("_gemini_tts_prefetch_tasks")
+    if isinstance(tasks, dict):
+        for task in list(tasks.values()):
+            if not task.done():
+                task.cancel()
+    
+    # Close any active gemini clients
+    clients = live_config.get("_gemini_clients")
+    if isinstance(clients, list):
+        for client in list(clients):
+            try:
+                client.close()
+            except Exception as e:
+                logger.debug("Error closing client: %s", e)
+        clients.clear()
+
+
 def get_gemini_live_model_name(config: dict | None) -> str:
     return str((config or {}).get("gemini_live_model") or DEFAULT_GEMINI_LIVE_MODEL).strip() or DEFAULT_GEMINI_LIVE_MODEL
 
@@ -330,26 +349,40 @@ def synthesize_gemini_tts_pcm(text: str, live_config: dict | None, *, purpose: s
         f"add, remove, or replace words: {json.dumps(str(text), ensure_ascii=False)}"
     )
     logger.info("[VOICE] Generating Gemini TTS for %s", purpose)
-    client = google_genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model=model_name,
-        contents=prompt,
-        config=google_genai_types.GenerateContentConfig(
-            response_modalities=["AUDIO"],
-            speech_config=google_genai_types.SpeechConfig(
-                voice_config=google_genai_types.VoiceConfig(
-                    prebuilt_voice_config=google_genai_types.PrebuiltVoiceConfig(
-                        voice_name=voice_name,
+    client = google_genai.Client(api_key=api_key, http_options={"timeout": 10.0})
+    if "_gemini_clients" not in config:
+        config["_gemini_clients"] = []
+    config["_gemini_clients"].append(client)
+    try:
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=google_genai_types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=google_genai_types.SpeechConfig(
+                    voice_config=google_genai_types.VoiceConfig(
+                        prebuilt_voice_config=google_genai_types.PrebuiltVoiceConfig(
+                            voice_name=voice_name,
+                        )
                     )
-                )
+                ),
             ),
-        ),
-    )
-    pcm = _extract_gemini_tts_pcm(response)
-    if len(_gemini_tts_cache) >= _GEMINI_TTS_CACHE_MAX:
-        _gemini_tts_cache.pop(next(iter(_gemini_tts_cache)), None)
-    _gemini_tts_cache[cache_key] = pcm
-    return pcm
+        )
+        pcm = _extract_gemini_tts_pcm(response)
+        if len(_gemini_tts_cache) >= _GEMINI_TTS_CACHE_MAX:
+            _gemini_tts_cache.pop(next(iter(_gemini_tts_cache)), None)
+        _gemini_tts_cache[cache_key] = pcm
+        return pcm
+    finally:
+        try:
+            if client in config.get("_gemini_clients", []):
+                config["_gemini_clients"].remove(client)
+        except Exception:
+            pass
+        try:
+            client.close()
+        except Exception:
+            pass
 
 
 async def pcm_to_audio_frames(
@@ -505,15 +538,15 @@ async def preflight_gemini_live_connection(live_config: dict) -> bool:
     )
 
     async def _connect_once() -> bool:
-        client = google_genai.Client(api_key=api_key)
-        session_kwargs = {
-            "model": model_name,
-            "config": {"response_modalities": ["AUDIO"], "speech_config": {"voice_config": {"prebuilt_voice_config": {"voice_name": voice_name}}}},
-        }
-        if language:
-            session_kwargs["config"]["language_code"] = language
-        async with client.aio.live.connect(**session_kwargs):
-            return True
+        with google_genai.Client(api_key=api_key, http_options={"timeout": 5.0}) as client:
+            session_kwargs = {
+                "model": model_name,
+                "config": {"response_modalities": ["AUDIO"], "speech_config": {"voice_config": {"prebuilt_voice_config": {"voice_name": voice_name}}}},
+            }
+            if language:
+                session_kwargs["config"]["language_code"] = language
+            async with client.aio.live.connect(**session_kwargs):
+                return True
 
     try:
         await asyncio.wait_for(_connect_once(), timeout=timeout_seconds)
@@ -1070,25 +1103,29 @@ async def entrypoint(ctx: JobContext) -> None:
         try:
             if await asyncio.to_thread(db.is_number_in_dnc, caller_phone):
                 logger.warning("[DNC] Call blocked. Number is in Do-Not-Call registry: %s", caller_phone)
+                await ctx.room.disconnect()
                 ctx.shutdown()
                 return
         except Exception as e:
             logger.error("[DNC] Error checking registry: %s", e)
 
-    # 2. Persistent Database-Backed Rate Limiting (max 5 calls per hour per number, cluster-safe)
-    if caller_phone != "unknown" and caller_phone != "Web-Sandbox-Test":
-        try:
-            recent_calls = await asyncio.to_thread(db.get_recent_call_count, caller_phone, hours=1)
-            if recent_calls >= 5:
-                logger.warning("[RATE-LIMIT] Call blocked. Number %s has exceeded 5 calls in the last hour.", caller_phone)
-                ctx.shutdown()
-                return
-        except Exception as e:
-            logger.error("[RATE-LIMIT] Error checking persistent rate limits: %s", e)
+    # 2. Persistent Database-Backed Rate Limiting (max 5 calls per hour per number, cluster-safe) - REMOVED per user request
+    # if caller_phone != "unknown" and caller_phone != "Web-Sandbox-Test":
+    #     try:
+    #         recent_calls = await asyncio.to_thread(db.get_recent_call_count, caller_phone, hours=1)
+    #         if recent_calls >= 5:
+    #             logger.warning("[RATE-LIMIT] Call blocked. Number %s has exceeded 5 calls in the last hour.", caller_phone)
+    #             await ctx.room.disconnect()
+    #             ctx.shutdown()
+    #             return
+    #     except Exception as e:
+    #         logger.error("[RATE-LIMIT] Error checking persistent rate limits: %s", e)
 
-    if is_rate_limited(caller_phone):
-        logger.warning("[RATE-LIMIT] Blocked %s", caller_phone)
-        return
+    # if is_rate_limited(caller_phone):
+    #     logger.warning("[RATE-LIMIT] Blocked %s", caller_phone)
+    #     await ctx.room.disconnect()
+    #     ctx.shutdown()
+    #     return
 
     live_config = get_live_config(caller_phone if caller_phone != "unknown" else None)
     
@@ -1106,6 +1143,18 @@ async def entrypoint(ctx: JobContext) -> None:
         logger.error("[WEBHOOK] Failed to publish call.started: %s", e)
     if not await preflight_gemini_live_connection(live_config):
         logger.error("[VOICE] Gemini Live preflight failed and no fallback runtime is available")
+        try:
+            import notify
+            await asyncio.to_thread(
+                notify.notify_agent_error,
+                caller_phone=caller_phone,
+                error="Gemini Live preflight failed and no fallback runtime is available",
+                config=live_config
+            )
+        except Exception as notify_exc:
+            logger.error("[VOICE] Failed to notify agent error: %s", notify_exc)
+        cleanup_resources(live_config)
+        await ctx.room.disconnect()
         ctx.shutdown()
         return
 
@@ -1182,6 +1231,17 @@ async def entrypoint(ctx: JobContext) -> None:
     if is_outbound_call:
         if not outbound_trunk_id:
             logger.error("[OUTBOUND] Missing SIP trunk ID")
+            try:
+                import notify
+                await asyncio.to_thread(
+                    notify.notify_agent_error,
+                    caller_phone=caller_phone,
+                    error="Missing SIP trunk ID",
+                    config=live_config
+                )
+            except Exception as notify_exc:
+                logger.error("[OUTBOUND] Failed to notify agent error: %s", notify_exc)
+            await ctx.room.disconnect()
             ctx.shutdown()
             return
         try:
@@ -1253,6 +1313,19 @@ async def entrypoint(ctx: JobContext) -> None:
             except Exception as db_exc:
                 logger.error("[OUTBOUND] Failed to log call failure to database: %s", db_exc)
                 
+            try:
+                import notify
+                await asyncio.to_thread(
+                    notify.notify_agent_error,
+                    caller_phone=caller_phone,
+                    error=summary_text,
+                    config=live_config
+                )
+            except Exception as notify_exc:
+                logger.error("[OUTBOUND] Failed to notify agent error: %s", notify_exc)
+                
+            cleanup_resources(live_config)
+            await ctx.room.disconnect()
             ctx.shutdown()
             return
         except Exception as exc:
@@ -1270,6 +1343,20 @@ async def entrypoint(ctx: JobContext) -> None:
                 )
             except Exception as db_exc:
                 logger.error("[OUTBOUND] Failed to log call failure to database: %s", db_exc)
+                
+            try:
+                import notify
+                await asyncio.to_thread(
+                    notify.notify_agent_error,
+                    caller_phone=caller_phone,
+                    error=f"Outbound call failed: {exc}",
+                    config=live_config
+                )
+            except Exception as notify_exc:
+                logger.error("[OUTBOUND] Failed to notify agent error: %s", notify_exc)
+                
+            cleanup_resources(live_config)
+            await ctx.room.disconnect()
             ctx.shutdown()
             return
 
@@ -1661,6 +1748,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 return
             shutdown_guard["started"] = True
 
+        cleanup_resources(live_config)
         await _flush_active_turn_metric(reason="call_ended")
         duration = int((datetime.now(timezone.utc) - call_start_time).total_seconds())
         booking_was_confirmed = False
