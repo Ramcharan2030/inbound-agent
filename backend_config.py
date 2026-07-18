@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
 from dotenv import load_dotenv
+
+logger = logging.getLogger("backend_config")
 
 # Load local environment files if present
 load_dotenv()
@@ -291,7 +294,24 @@ def read_config(phone_number: str | None = None) -> dict[str, Any]:
     merged: dict[str, Any] = {}
     for layer in _config_layers(phone_number):
         merged.update({key: value for key, value in layer.items() if key in ALLOWED_CONFIG_KEYS})
-    return _normalize_config(merged)
+    normalized = _normalize_config(merged)
+
+    phone_suffix = _normalized_phone_suffix(phone_number)
+    if phone_suffix:
+        CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
+        target_path = CONFIGS_DIR / f"{phone_suffix}.json"
+    else:
+        target_path = ensure_primary_config_parent()
+
+    try:
+        on_disk = _load_json(target_path)
+        if on_disk != normalized:
+            with target_path.open("w", encoding="utf-8") as handle:
+                json.dump(normalized, handle, indent=4)
+    except Exception as exc:
+        logger.error("Failed to internally save config on read for %s: %s", target_path, exc)
+
+    return normalized
 
 
 def write_config(data: dict[str, Any]) -> dict[str, Any]:
