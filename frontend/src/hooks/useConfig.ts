@@ -25,8 +25,12 @@ export function useConfig() {
   const updateConfig = async (newConfig: Config) => {
     try {
       setSaving(true);
-      await client.post('/api/config', newConfig);
-      setConfig(newConfig);
+      const res = await client.post('/api/config', newConfig);
+      if (res.data && res.data.config) {
+        setConfig(res.data.config);
+      } else {
+        setConfig(newConfig);
+      }
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message };

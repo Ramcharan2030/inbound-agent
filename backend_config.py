@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 from pathlib import Path
 from typing import Any
 from dotenv import load_dotenv
-
-logger = logging.getLogger("backend_config")
 
 # Load local environment files if present
 load_dotenv()
@@ -294,24 +291,27 @@ def read_config(phone_number: str | None = None) -> dict[str, Any]:
     merged: dict[str, Any] = {}
     for layer in _config_layers(phone_number):
         merged.update({key: value for key, value in layer.items() if key in ALLOWED_CONFIG_KEYS})
-    normalized = _normalize_config(merged)
+    return _normalize_config(merged)
 
-    phone_suffix = _normalized_phone_suffix(phone_number)
-    if phone_suffix:
-        CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
-        target_path = CONFIGS_DIR / f"{phone_suffix}.json"
-    else:
-        target_path = ensure_primary_config_parent()
 
+def _sync_to_env_file(config: dict[str, Any]) -> None:
+    env_path = PROJECT_ROOT / ".env"
+    if not env_path.exists():
+        return
     try:
-        on_disk = _load_json(target_path)
-        if on_disk != normalized:
-            with target_path.open("w", encoding="utf-8") as handle:
-                json.dump(normalized, handle, indent=4)
+        from dotenv import set_key
+        for key, env_key in ENV_KEY_MAP.items():
+            if key in config:
+                val = config[key]
+                if val is None:
+                    str_val = ""
+                elif isinstance(val, bool):
+                    str_val = "true" if val else "false"
+                else:
+                    str_val = str(val)
+                set_key(env_path, env_key, str_val, quote_mode="always")
     except Exception as exc:
-        logger.error("Failed to internally save config on read for %s: %s", target_path, exc)
-
-    return normalized
+        logger.warning("Failed to sync config to .env file: %s", exc)
 
 
 def write_config(data: dict[str, Any]) -> dict[str, Any]:
@@ -324,6 +324,7 @@ def write_config(data: dict[str, Any]) -> dict[str, Any]:
     config_path = ensure_primary_config_parent()
     with config_path.open("w", encoding="utf-8") as handle:
         json.dump(normalized, handle, indent=4)
+    _sync_to_env_file(normalized)
     return normalized
 
 
